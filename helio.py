@@ -33,7 +33,7 @@ sensor = adafruit_fxos8700.FXOS8700(i2c)
 
 # Setup calibration data global variable
 cal = { 'acxs': [], 'acys': [], 'aczs': [], 'tcxss': [], 'tcyss': [], 'tczss': [] }
-
+NUMBER_OF_SCANS = 1
 
 def calibrate():
     global cal
@@ -45,8 +45,9 @@ def calibrate():
     MOTORA.stop()
     cal = { 'acxs': [], 'acys': [], 'aczs': [], 'tcxss': [], 'tcyss': [], 'tczss': [] }
     remaining_amotor_travel_time = MOTOR_TRAVEL_TIME
-    partial_amotor_travel_time = MOTOR_TRAVEL_TIME / 1
-    while remaining_amotor_travel_time > 0:
+    if NUMBER_OF_SCANS > 1:
+        partial_amotor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
+    while remaining_amotor_travel_time >= 0:
         logging.info("Start fully retract heading motor")
         MOTORH.backward()
         time.sleep(MOTOR_TRAVEL_TIME)
@@ -60,6 +61,8 @@ def calibrate():
         cal['tcxss'].append(savgol_filter(tcxs, 9, 1))
         cal['tcyss'].append(savgol_filter(tcys, 9, 1))
         cal['tczss'].append(savgol_filter(tczs, 9, 1))
+        if NUMBER_OF_SCANS == 1:
+            break
         logging.info("Start partially extend azimut motor")
         MOTORA.forward()
         time.sleep(partial_amotor_travel_time)
@@ -71,6 +74,7 @@ def calibrate():
     time.sleep(MOTOR_TRAVEL_TIME)
     logging.info("Stop fully retract azimut motor")
     logging.info("Stop calibration")
+
 
 def save_calibration():
     global cal
@@ -102,21 +106,22 @@ def load_calibration():
     with open('tcxss.csv', 'r') as f:
         reader = csv.reader(f)
         next(reader)
-        cal['tcxss'] = [list(tcxs) for tcxs in zip(*reader)]
+        cal['tcxss'] = [list(map(float, tcxs)) for tcxs in zip(*reader)]
     with open('tcyss.csv', 'r') as f:
         reader = csv.reader(f)
         next(reader)
-        cal['tcyss'] = [list(tcys) for tcys in zip(*reader)]
+        cal['tcyss'] = [list(map(float, tcys)) for tcys in zip(*reader)]
     with open('tczss.csv', 'r') as f:
         reader = csv.reader(f)
         next(reader)
-        cal['tczss'] = [list(tczs) for tcys in zip(*reader)]
+        cal['tczss'] = [list(map(float, tczs)) for tczs in zip(*reader)]
     with open('acxyzs.csv', 'r') as f:
         reader = csv.reader(f)
         next(reader)
-        cal['acxs'] = list(list(zip(*reader))[0])
-        cal['acys'] = list(list(zip(*reader))[1])
-        cal['aczs'] = list(list(zip(*reader))[2])
+        acxyzs = list(zip(*reader))
+        cal['acxs'] = list(map(float, acxyzs[0]))
+        cal['acys'] = list(map(float, acxyzs[1]))
+        cal['aczs'] = list(map(float, acxyzs[2]))
 
 
 def track_random():
@@ -135,9 +140,10 @@ def track_random():
             acx, acy, acz = sensor.accelerometer
             aangle = vg.angle(numpy.array([racx, racy, racz]), numpy.array([acx, acy, acz]))
             tangle = vg.angle(numpy.array([rtcx, rtcy, rtcz]), numpy.array([tcx, tcy, tcz]))
-            print("azimut: {:4.1f} - heading: {:4.1f}\r".format(aangle, tangle))
+            print("azimut: {:4.1f} - heading: {:4.1f}".format(aangle, tangle), end="\r")
+            time.sleep(0.1)
     except KeyboardInterrupt:
-        pass
+        return
 
 
 
@@ -163,11 +169,10 @@ def scan():
 
 def main():
     menu = ConsoleMenu("Heliostat", "Control Center")
-    function_item = FunctionItem("Calibrate", calibrate)
-    function_item = FunctionItem("Save calibration to file", save_calibration)
-    function_item = FunctionItem("Load calibration from file", load_calibration)
-    function_item = FunctionItem("Track angular distance to random calibration point", track_random)
-    menu.append_item(function_item)
+    menu.append_item(FunctionItem("Calibrate", calibrate))
+    menu.append_item(FunctionItem("Save calibration to file", save_calibration))
+    menu.append_item(FunctionItem("Load calibration from file", load_calibration))
+    menu.append_item(FunctionItem("Track angular distance to random calibration point", track_random))
     menu.show()
 
 
