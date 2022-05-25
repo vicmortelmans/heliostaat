@@ -35,6 +35,264 @@ sensor = adafruit_fxos8700.FXOS8700(i2c)
 cal = { 'acxs': [], 'acys': [], 'aczs': [], 'tcxss': [], 'tcyss': [], 'tczss': [] }
 NUMBER_OF_SCANS = 1
 
+
+class Magnetometer(object):
+    ''' Magnetometer class with calibration capabilities.
+
+        Parameters
+        ----------
+        sensor : str
+            Sensor to use.
+        bus : int
+            Bus where the sensor is attached.
+        F : float (optional)
+            Expected earth magnetic field intensity, default=1.
+    '''
+
+    def __init__(self, F=1.):
+
+        self.sensor = FXOS8700()
+
+        # initialize values
+        self.F   = F
+        self.b   = np.zeros([3, 1])
+        self.A_1 = np.eye(3)
+        self._calibration_complete = None
+
+    def read(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : list
+                The sample in uT, [x,y,z] (corrected if performed calibration).
+        '''
+        s = np.array(self.sensor.read()).reshape(3, 1)
+        s = np.dot(self.A_1, s - self.b)
+        return [s[0,0], s[1,0], s[2,0]]
+
+    def launch_calibration(self):
+        ''' Performs calibration, actually only the loop collecting the data,
+            running in a separate thread. It's monitoring the calibration_complete
+            property, set by the finish_calibration method, to stop. 
+            The caller must take care of triggering the motion of the sensor and
+            of calling finish_calibraiton when done.
+        '''
+
+        if self._calibration_complete == True:
+            logging.error("Trying to launch calibration before previous one finished!")
+            return
+        self._calibration_s = []
+        self._calibration_n = 0
+        self._calibration_complete = False
+        Thread(target=self.__collect_calibration_data).start()
+
+
+    def __collect_calibration_data(self):
+        while self.calibration_complete == False:
+            self._calibration_s.append(self.sensor.read())
+            self._calibration_n += 1
+
+
+    def finish_calibration(self):
+        ''' Finishes the calibration, by setting the calibration_complete property
+            to finish data collection by the launch_calibration thread and then
+            calculating the calibration result
+        '''
+
+        # finish reading sensor data
+        self._calibration_complete = True
+        s = self._calibration_s
+        n = self._calibration_n
+
+        # ellipsoid fit
+        s = np.array(s).T
+        M, n, d = self.__ellipsoid_fit(s)
+
+        # calibration parameters
+        # note: some implementations of sqrtm return complex type, taking real
+        M_1 = linalg.inv(M)
+        self.b = -np.dot(M_1, n)
+        self.A_1 = np.real(self.F / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
+                           linalg.sqrtm(M))
+
+        # clear way for next calibration
+        self._calibration_complete = None
+
+
+    def save_calibration(self):
+        ''' Saves calibration data to two files magcal_b.npy and magcal_A_1.npy
+            in current directory
+        '''
+
+        logging.debug("Magnetic calibration going to be saved to file")
+        np.save('magcal_b.npy', self.b)
+        np.save('magcal_A_1.npy', self.A_1)
+        logging.info("Magnetic calibration saved to file")
+
+
+    def load_calibration(self):
+        ''' Loads calibration data from two files magcal_b.npy and magcal_A_1.npy
+            in current directory
+        '''
+
+        logging.debug("Magnetic calibration going to be loaded from file")
+        self.b = np.load('magcal_b.npy')
+        self.A_1 = np.load('magcal_A1.npy')
+        logging.info("Magnetic calibration loaded from file")
+
+
+    def __ellipsoid_fit(self, s):
+        ''' Estimate ellipsoid parameters from a set of points.
+
+            Parameters
+            ----------
+            s : array_like
+              The samples (M,N) where M=3 (x,y,z) and N=number of samples.
+
+            Returns
+            -------
+            M, n, d : array_like, array_like, float
+              The ellipsoid parameters M, n, d.
+
+            References
+            ----------
+            .. [1] Qingde Li; Griffiths, J.G., "Least squares ellipsoid specific
+               fitting," in Geometric Modeling and Processing, 2004.
+               Proceedings, vol., no., pp.335-340, 2004
+        '''
+
+        # D (samples)
+        D = np.array([s[0]**2., s[1]**2., s[2]**2.,
+                      2.*s[1]*s[2], 2.*s[0]*s[2], 2.*s[0]*s[1],
+                      2.*s[0], 2.*s[1], 2.*s[2], np.ones_like(s[0])])
+
+        # S, S_11, S_12, S_21, S_22 (eq. 11)
+        S = np.dot(D, D.T)
+        S_11 = S[:6,:6]
+        S_12 = S[:6,6:]
+        S_21 = S[6:,:6]
+        S_22 = S[6:,6:]
+
+        # C (Eq. 8, k=4)
+        C = np.array([[-1,  1,  1,  0,  0,  0],
+                      [ 1, -1,  1,  0,  0,  0],
+                      [ 1,  1, -1,  0,  0,  0],
+                      [ 0,  0,  0, -4,  0,  0],
+                      [ 0,  0,  0,  0, -4,  0],
+                      [ 0,  0,  0,  0,  0, -4]])
+
+        # v_1 (eq. 15, solution)
+        E = np.dot(linalg.inv(C),
+                   S_11 - np.dot(S_12, np.dot(linalg.inv(S_22), S_21)))
+
+        E_w, E_v = np.linalg.eig(E)
+
+        v_1 = E_v[:, np.argmax(E_w)]
+        if v_1[0] < 0: v_1 = -v_1
+
+        # v_2 (eq. 13, solution)
+        v_2 = np.dot(np.dot(-np.linalg.inv(S_22), S_21), v_1)
+
+        # quadric-form parameters
+        M = np.array([[v_1[0], v_1[3], v_1[4]],
+                      [v_1[3], v_1[1], v_1[5]],
+                      [v_1[4], v_1[5], v_1[2]]])
+        n = np.array([[v_2[0]],
+                      [v_2[1]],
+                      [v_2[2]]])
+        d = v_2[3]
+
+        return M, n, d
+
+
+class FXOS8700(object):
+    ''' FXOS8700 Simple Driver.
+    '''
+
+    def __init__(self):
+        self.i2c = board.I2C()
+        self.sensor = adafruit_fxos8700.FXOS8700(self.i2c)
+
+    def __del__(self):
+        pass
+
+    def read(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : list
+                The sample in uT, [x, y, z].
+        '''
+
+        number_of_readouts = 48
+
+        xs = 0.0
+        ys = 0.0
+        zs = 0.0
+        for i in range(number_of_readouts):
+            x, y, z = self.sensor.magnetometer
+            xs += x
+            ys += y
+            zs += z
+        xm = xs / number_of_readouts
+        ym = ys / number_of_readouts
+        zm = zs / number_of_readouts
+        return [xm, ym, zm]
+
+
+def calibrate_magnetometer():
+    global ms
+    ms.launch_calibration()  # starts reading
+    logging.info("Start magnetometer calibration")
+    logging.info("Start fully retract azimut motor")
+    MOTORA.backward()
+    time.sleep(MOTOR_TRAVEL_TIME)
+    logging.info("Stop fully retract azimut motor")
+    MOTORA.stop()
+    logging.info("Start fully retract heading motor")
+    MOTORH.backward()
+    time.sleep(MOTOR_TRAVEL_TIME)
+    logging.info("Stop fully retract heading motor")
+    MOTORH.stop()
+    motorh_due_forward = True
+    remaining_amotor_travel_time = MOTOR_TRAVEL_TIME
+    if NUMBER_OF_SCANS > 1:
+        partial_amotor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
+    while remaining_amotor_travel_time >= 0:
+        if motorh_due_forward:
+            logging.info("Start fully extend heading motor")
+            MOTORH.forward()
+            time.sleep(MOTOR_TRAVEL_TIME)
+            logging.info("Stop fully extend heading motor")
+            MOTORH.stop()
+        else:
+            logging.info("Start fully retract heading motor")
+            MOTORH.backward()
+            time.sleep(MOTOR_TRAVEL_TIME)
+            logging.info("Stop fully retract heading motor")
+            MOTORH.stop()
+        if NUMBER_OF_SCANS == 1:
+            break
+        logging.info("Start partially extend azimut motor")
+        MOTORA.forward()
+        time.sleep(partial_amotor_travel_time)
+        MOTORA.stop()
+        logging.info("Stop partially extend azimut motor")
+        remaining_amotor_travel_time -= partial_amotor_travel_time
+    logging.info("Start fully retract azimut motor")
+    MOTORA.backward()
+    time.sleep(MOTOR_TRAVEL_TIME)
+    logging.info("Stop fully retract azimut motor")
+    logging.info("Stop magnetometer calibration")
+    
+    
+def save_magnetometer_calibration()
+    global ms
+
+
+
 def calibrate():
     global cal
     logging.info("Start calibration")
@@ -51,8 +309,8 @@ def calibrate():
         logging.info("Start fully retract heading motor")
         MOTORH.backward()
         time.sleep(MOTOR_TRAVEL_TIME)
-        MOTORH.stop()
         logging.info("Stop fully retract heading motor")
+        MOTORH.stop()
         acx, acy, acz = sensor.accelerometer
         tcxs, tcys, tczs = scan()
         cal['acxs'].append(acx)
@@ -67,8 +325,8 @@ def calibrate():
         MOTORA.forward()
         time.sleep(partial_amotor_travel_time)
         MOTORA.stop()
-        remaining_amotor_travel_time -= partial_amotor_travel_time
         logging.info("Stop partially extend azimut motor")
+        remaining_amotor_travel_time -= partial_amotor_travel_time
     logging.info("Start fully retract azimut motor")
     MOTORA.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
@@ -168,7 +426,12 @@ def scan():
 
 
 def main():
+    global ms
+    ms = Magnetometer(50)  # 50 is just a general scaling factor for the readouts
     menu = ConsoleMenu("Heliostat", "Control Center")
+    menu.append_item(FunctionItem("Calibrate magnetometer", calibrate_magnetometer))
+    menu.append_item(FunctionItem("Save magnetometer calibration to file", save_magnetometer_calibration))
+    menu.append_item(FunctionItem("Load calibration from file", load_magnetometer_calibration))
     menu.append_item(FunctionItem("Calibrate", calibrate))
     menu.append_item(FunctionItem("Save calibration to file", save_calibration))
     menu.append_item(FunctionItem("Load calibration from file", load_calibration))
