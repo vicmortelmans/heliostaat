@@ -13,9 +13,10 @@ from consolemenu.items import *
 import csv
 from gpiozero import Motor
 import logging
-import numpy
+import numpy as np
 import random
-from scipy.signal import savgol_filter
+from scipy import linalg, signal
+import threading
 import time
 import vg
 
@@ -23,7 +24,7 @@ import vg
 logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.DEBUG)
 
 # Setup motors
-MOTOR_TRAVEL_TIME = 30  # seconds
+MOTOR_TRAVEL_TIME = 10  # 30 seconds, 10 for speeding up durig debugging
 MOTORH = Motor(26, 20)
 MOTORA = Motor(19, 16)
 
@@ -36,27 +37,40 @@ cal = { 'acxs': [], 'acys': [], 'aczs': [], 'tcxss': [], 'tcyss': [], 'tczss': [
 NUMBER_OF_SCANS = 1
 
 
-class Magnetometer(object):
-    ''' Magnetometer class with calibration capabilities.
-
-        Parameters
-        ----------
-        sensor : str
-            Sensor to use.
-        bus : int
-            Bus where the sensor is attached.
-        F : float (optional)
-            Expected earth magnetic field intensity, default=1.
+class Accelerometer(object):
+    ''' Accelerometer class.
     '''
 
-    def __init__(self, F=1.):
+    def __init__(self):
 
-        self.sensor = FXOS8700()
+        self.sensor = FXOS8700_as()
+
+    def read(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : np.array
+                The reading as a unit vector [x,y,z]
+        '''
+        s = self.sensor.read()
+        s_vector = np.array(s)
+        return s / np.linalg.norm(s)
+
+
+class Magnetometer(object):
+    ''' Magnetometer class with calibration capabilities.
+    '''
+
+    def __init__(self):
+
+        self.sensor = FXOS8700_ms()
 
         # initialize values
-        self.F   = F
         self.b   = np.zeros([3, 1])
         self.A_1 = np.eye(3)
+        self._calibration_s = []  # list of raw sensor readings during calibration
+        self._calibration_n = 0  # number of readings during calibration
         self._calibration_complete = None
 
     def read(self):
@@ -64,16 +78,17 @@ class Magnetometer(object):
 
             Returns
             -------
-            s : list
-                The sample in uT, [x,y,z] (corrected if performed calibration).
+            s : np.array
+                The reading as a unit vector [x,y,z] (corrected if performed calibration).
         '''
-        s = np.array(self.sensor.read()).reshape(3, 1)
-        s = np.dot(self.A_1, s - self.b)
-        return [s[0,0], s[1,0], s[2,0]]
+        s_vert = np.array(self.sensor.read()).reshape(3, 1)  # vertical array
+        s_vert = np.dot(self.A_1, s_vert - self.b)
+        s = s_vert[:,0]
+        return s / np.linalg.norm(s)
 
     def launch_calibration(self):
         ''' Performs calibration, actually only the loop collecting the data,
-            running in a separate thread. It's monitoring the calibration_complete
+            running in a separate thread. It's monitoring the _calibration_complete
             property, set by the finish_calibration method, to stop. 
             The caller must take care of triggering the motion of the sensor and
             of calling finish_calibraiton when done.
@@ -85,13 +100,15 @@ class Magnetometer(object):
         self._calibration_s = []
         self._calibration_n = 0
         self._calibration_complete = False
-        Thread(target=self.__collect_calibration_data).start()
+        threading.Thread(target=self.__collect_calibration_data).start()
 
 
     def __collect_calibration_data(self):
-        while self.calibration_complete == False:
+        logging.info("Starting to collect samples for magnetometer calibration in thread")
+        while self._calibration_complete == False:
             self._calibration_s.append(self.sensor.read())
             self._calibration_n += 1
+        logging.info("Stopped collecting samples for magnetometer calibration in thread")
 
 
     def finish_calibration(self):
@@ -104,6 +121,7 @@ class Magnetometer(object):
         self._calibration_complete = True
         s = self._calibration_s
         n = self._calibration_n
+        logging.info(f"Collected {n} samples for magnetometer calibration")
 
         # ellipsoid fit
         s = np.array(s).T
@@ -113,7 +131,7 @@ class Magnetometer(object):
         # note: some implementations of sqrtm return complex type, taking real
         M_1 = linalg.inv(M)
         self.b = -np.dot(M_1, n)
-        self.A_1 = np.real(self.F / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
+        self.A_1 = np.real(1 / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
                            linalg.sqrtm(M))
 
         # clear way for next calibration
@@ -186,13 +204,13 @@ class Magnetometer(object):
         E = np.dot(linalg.inv(C),
                    S_11 - np.dot(S_12, np.dot(linalg.inv(S_22), S_21)))
 
-        E_w, E_v = np.linalg.eig(E)
+        E_w, E_v = linalg.eig(E)
 
         v_1 = E_v[:, np.argmax(E_w)]
         if v_1[0] < 0: v_1 = -v_1
 
         # v_2 (eq. 13, solution)
-        v_2 = np.dot(np.dot(-np.linalg.inv(S_22), S_21), v_1)
+        v_2 = np.dot(np.dot(-linalg.inv(S_22), S_21), v_1)
 
         # quadric-form parameters
         M = np.array([[v_1[0], v_1[3], v_1[4]],
@@ -206,8 +224,8 @@ class Magnetometer(object):
         return M, n, d
 
 
-class FXOS8700(object):
-    ''' FXOS8700 Simple Driver.
+class FXOS8700_ms(object):
+    ''' FXOS8700 Simple Driver for magnetic sensor readings.
     '''
 
     def __init__(self):
@@ -242,9 +260,34 @@ class FXOS8700(object):
         return [xm, ym, zm]
 
 
+class FXOS8700_as(object):
+    ''' FXOS8700 Simple Driver for acceleration sensor readings.
+    '''
+
+    def __init__(self):
+        self.i2c = board.I2C()
+        self.sensor = adafruit_fxos8700.FXOS8700(self.i2c)
+
+    def __del__(self):
+        pass
+
+    def read(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : list
+                The sample in uT, [x, y, z].
+        '''
+
+        x, y, z = self.sensor.accelerometer
+        return [x, y, z]
+
+
+
 def calibrate_magnetometer():
-    global ms
-    ms.launch_calibration()  # starts reading
+    global magnetometer
+    magnetometer.launch_calibration()  # starts reading
     logging.info("Start magnetometer calibration")
     logging.info("Start fully retract azimut motor")
     MOTORA.backward()
@@ -285,12 +328,19 @@ def calibrate_magnetometer():
     MOTORA.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
     logging.info("Stop fully retract azimut motor")
-    logging.info("Stop magnetometer calibration")
+    logging.info("Finish magnetometer calibration")
+    magnetometer.finish_calibration()  # stops reading
+    logging.info("Finished magnetometer calibration")
     
     
-def save_magnetometer_calibration()
-    global ms
+def save_magnetometer_calibration():
+    global magnetometer
+    magnetometer.save_calibration()
 
+
+def load_magnetometer_calibration():
+    global magnetometer
+    magnetometer.load_calibration()
 
 
 def calibrate():
@@ -316,9 +366,9 @@ def calibrate():
         cal['acxs'].append(acx)
         cal['acys'].append(acy)
         cal['aczs'].append(acz)
-        cal['tcxss'].append(savgol_filter(tcxs, 9, 1))
-        cal['tcyss'].append(savgol_filter(tcys, 9, 1))
-        cal['tczss'].append(savgol_filter(tczs, 9, 1))
+        cal['tcxss'].append(signal.savgol_filter(tcxs, 9, 1))
+        cal['tcyss'].append(signal.savgol_filter(tcys, 9, 1))
+        cal['tczss'].append(signal.savgol_filter(tczs, 9, 1))
         if NUMBER_OF_SCANS == 1:
             break
         logging.info("Start partially extend azimut motor")
@@ -382,6 +432,51 @@ def load_calibration():
         cal['aczs'] = list(map(float, acxyzs[2]))
 
 
+def projection_on_vector(v1, v2):
+    ''' Returns vector projection of v1 on v2
+    '''
+    return (np.dot(v1, v2) / np.dot(v2, v2)) * v2
+
+
+def projection_on_plane(v1, n):
+    ''' Returns project of v1 on the plane defined by normal vector n
+    '''
+    return v1 - projection_on_vector(v1, n)
+
+
+def angle_between_vectors(v1, v2):
+    ''' Returns the angle between v1 and v2 in radians
+    '''
+    v1_unit = v1 / np.linalg.norm(v1)
+    v2_unit = v2 / np.linalg.norm(v2)
+    return np.arccos(np.dot(v1_unit, v2_unit))
+
+
+def track_inclination_and_heading():
+    global accelerometer, magnetometer
+    try:
+        while True:
+            a = np.array(accelerometer.read())
+            m = np.array(magnetometer.read())
+            vertical = np.array([-1,0,0])  # X-axis is vertical pointing up when collapsed; depends on how the sensor is mounted!
+            # elevation is the angle between a and vertical
+            elevation = np.degrees(angle_between_vectors(a, vertical))
+            # normal vector of the mirror
+            mirror_normal = np.array([0,1,0])  # Y-axis is perpendicular to the mirror; depends on how the sensor is mounted!
+            # projection of the Y-axis on the horizontal plane
+            y_horizontal = projection_on_plane(mirror_normal, a)
+            # projection of the magnetic vector on the horizontal plane
+            m_horizontal = projection_on_plane(m, a)
+            # heading is angle between these two projected vectors in the horizontal plane
+            heading = np.degrees(angle_between_vectors(y_horizontal, m_horizontal))
+            print("elevation: {:4.1f} - heading: {:4.1f}".format(elevation, heading), end="\r")
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        return
+
+
+
+
 def track_random():
     global cal
     acidx = random.randrange(0,len(cal['acxs']))
@@ -396,8 +491,8 @@ def track_random():
         while True:
             tcx, tcy, tcz = sensor.magnetometer
             acx, acy, acz = sensor.accelerometer
-            aangle = vg.angle(numpy.array([racx, racy, racz]), numpy.array([acx, acy, acz]))
-            tangle = vg.angle(numpy.array([rtcx, rtcy, rtcz]), numpy.array([tcx, tcy, tcz]))
+            aangle = vg.angle(np.array([racx, racy, racz]), np.array([acx, acy, acz]))
+            tangle = vg.angle(np.array([rtcx, rtcy, rtcz]), np.array([tcx, tcy, tcz]))
             print("azimut: {:4.1f} - heading: {:4.1f}".format(aangle, tangle), end="\r")
             time.sleep(0.1)
     except KeyboardInterrupt:
@@ -426,16 +521,18 @@ def scan():
 
 
 def main():
-    global ms
-    ms = Magnetometer(50)  # 50 is just a general scaling factor for the readouts
+    global accelerometer, magnetometer
+    accelerometer = Accelerometer()
+    magnetometer = Magnetometer()
     menu = ConsoleMenu("Heliostat", "Control Center")
     menu.append_item(FunctionItem("Calibrate magnetometer", calibrate_magnetometer))
     menu.append_item(FunctionItem("Save magnetometer calibration to file", save_magnetometer_calibration))
-    menu.append_item(FunctionItem("Load calibration from file", load_magnetometer_calibration))
+    menu.append_item(FunctionItem("Load magnetometer calibration from file", load_magnetometer_calibration))
     menu.append_item(FunctionItem("Calibrate", calibrate))
     menu.append_item(FunctionItem("Save calibration to file", save_calibration))
     menu.append_item(FunctionItem("Load calibration from file", load_calibration))
     menu.append_item(FunctionItem("Track angular distance to random calibration point", track_random))
+    menu.append_item(FunctionItem("Track inclination and heading angles", track_inclination_and_heading))
     menu.show()
 
 
