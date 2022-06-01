@@ -10,14 +10,13 @@ import adafruit_fxos8700
 import adafruit_fxas21002c
 from ahrs.filters import Madgwick
 import board
-from consolemenu import *
-from consolemenu.items import *
 import csv
 from gpiozero import Motor
 import logging
 import numpy as np
 import random
 from scipy import linalg, signal
+from simple_term_menu import TerminalMenu
 import threading
 import time
 import vg
@@ -609,17 +608,21 @@ def main():
     accelerometer = Accelerometer()
     magnetometer = Magnetometer()
     gyroscope = Gyroscope()
-    menu = ConsoleMenu("Heliostat", "Control Center")
-    menu.append_item(FunctionItem("Calibrate magnetometer", calibrate_magnetometer))
-    menu.append_item(FunctionItem("Save magnetometer calibration to file", save_magnetometer_calibration))
-    menu.append_item(FunctionItem("Load magnetometer calibration from file", load_magnetometer_calibration))
-    menu.append_item(FunctionItem("Calibrate", calibrate))
-    menu.append_item(FunctionItem("Save calibration to file", save_calibration))
-    menu.append_item(FunctionItem("Load calibration from file", load_calibration))
-    menu.append_item(FunctionItem("Track angular distance to random calibration point", track_random))
-    menu.append_item(FunctionItem("Track inclination and heading angles", track_inclination_and_heading))
-    menu.append_item(FunctionItem("Track Madgwick", track_madgwick))
-    menu.show()
+    options = [
+        ['Calibrate magnetometer', calibrate_magnetometer],
+        ['Save magnetometer calibration to file', save_magnetometer_calibration],
+        ['Load magnetometer calibration from file', load_magnetometer_calibration],
+        ['Calibrate', calibrate],
+        ['Save calibration to file', save_calibration],
+        ['Load calibration from file', load_calibration],
+        ['Track angular distance to random calibration point', track_random],
+        ['Track inclination and heading angles', track_inclination_and_heading],
+        ['Track Madgwick', track_madgwick]
+    ]
+    terminal_menu = TerminalMenu([option[0] for option in options])
+    while True:
+        choice = terminal_menu.show()
+        options[choice][1]()  # run the function stored as second element in the chosen row of options
 
 
 if __name__ == "__main__":
