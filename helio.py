@@ -7,6 +7,8 @@
 # During development, it's invoked on command line
 
 import adafruit_fxos8700
+import adafruit_fxas21002c
+from ahrs.filters import Madgwick
 import board
 from consolemenu import *
 from consolemenu.items import *
@@ -37,6 +39,25 @@ cal = { 'acxs': [], 'acys': [], 'aczs': [], 'tcxss': [], 'tcyss': [], 'tczss': [
 NUMBER_OF_SCANS = 1
 
 
+class Gyroscope(object):
+    ''' Gyroscope class.
+    '''
+
+    def __init__(self):
+
+        self.sensor = FXAS21002c()
+
+    def read_rads(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : np.array
+                The readings in radians/s (= raw values)
+        '''
+        return np.array(self.sensor.read())
+
+
 class Accelerometer(object):
     ''' Accelerometer class.
     '''
@@ -53,9 +74,18 @@ class Accelerometer(object):
             s : np.array
                 The reading as a unit vector [x,y,z]
         '''
-        s = self.sensor.read()
-        s_vector = np.array(s)
+        s = np.array(self.sensor.read())
         return s / np.linalg.norm(s)
+
+    def read_ms2(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : np.array
+                The readings in m/s^2 (= raw values)
+        '''
+        return np.array(self.sensor.read())
 
 
 class Magnetometer(object):
@@ -85,6 +115,17 @@ class Magnetometer(object):
         s_vert = np.dot(self.A_1, s_vert - self.b)
         s = s_vert[:,0]
         return s / np.linalg.norm(s)
+
+    def read_nT(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : np.array
+                The readings in nano-Tesla 
+        '''
+        return 1000 * np.array(self.sensor.read())
+
 
     def launch_calibration(self):
         ''' Performs calibration, actually only the loop collecting the data,
@@ -156,7 +197,7 @@ class Magnetometer(object):
 
         logging.debug("Magnetic calibration going to be loaded from file")
         self.b = np.load('magcal_b.npy')
-        self.A_1 = np.load('magcal_A1.npy')
+        self.A_1 = np.load('magcal_A_1.npy')
         logging.info("Magnetic calibration loaded from file")
 
 
@@ -224,6 +265,30 @@ class Magnetometer(object):
         return M, n, d
 
 
+class FXAS21002c(object):
+    ''' FXAS21002c Simple Driver for gyroscope sensor readings.
+    '''
+
+    def __init__(self):
+        self.i2c = board.I2C()
+        self.sensor = adafruit_fxas21002c.FXAS21002C(i2c)
+
+    def __del__(self):
+        pass
+
+    def read(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : list
+                The sample in radians/s, [x, y, z].
+        '''
+
+        x, y, z = self.sensor.gyroscope
+        return [x, y, z]
+
+
 class FXOS8700_ms(object):
     ''' FXOS8700 Simple Driver for magnetic sensor readings.
     '''
@@ -235,7 +300,7 @@ class FXOS8700_ms(object):
     def __del__(self):
         pass
 
-    def read(self):
+    def read(self, number_of_readouts=48):
         ''' Get a sample.
 
             Returns
@@ -243,8 +308,6 @@ class FXOS8700_ms(object):
             s : list
                 The sample in uT, [x, y, z].
         '''
-
-        number_of_readouts = 48
 
         xs = 0.0
         ys = 0.0
@@ -456,8 +519,8 @@ def track_inclination_and_heading():
     global accelerometer, magnetometer
     try:
         while True:
-            a = np.array(accelerometer.read())
-            m = np.array(magnetometer.read())
+            a = accelerometer.read()
+            m = magnetometer.read()
             vertical = np.array([-1,0,0])  # X-axis is vertical pointing up when collapsed; depends on how the sensor is mounted!
             # elevation is the angle between a and vertical
             elevation = np.degrees(angle_between_vectors(a, vertical))
@@ -477,6 +540,25 @@ def track_inclination_and_heading():
         pass
 
 
+def track_madgwick():
+    global accelerometer, magnetometer, gyroscope
+    madgwick = Madgwick()
+    try:
+        time_previous = time.time()
+        q_previous = [1.0, 0.0, 0.0, 0.0]
+        while True:
+            a = accelerometer.read_ms2()
+            m = magnetometer.read_nT()
+            g = gyroscope.read_rads()
+            time_now = time.time()
+            time_delay = time_now - time_previous
+            q_now = madgwick.updateMARG(q_previous, gyr=g, acc=a, mag=m, dt=time_delay)
+            time_previous = time_now
+            q_previous = q_now
+            e = q_now.to_angles()
+            print("roll (elevation): {:4.1f} - pitch: {:4.1f} - yaw (heading): {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
+    except KeyboardInterrupt:
+        pass
 
 
 def track_random():
@@ -523,9 +605,10 @@ def scan():
 
 
 def main():
-    global accelerometer, magnetometer
+    global accelerometer, magnetometer, gyroscope
     accelerometer = Accelerometer()
     magnetometer = Magnetometer()
+    gyroscope = Gyroscope()
     menu = ConsoleMenu("Heliostat", "Control Center")
     menu.append_item(FunctionItem("Calibrate magnetometer", calibrate_magnetometer))
     menu.append_item(FunctionItem("Save magnetometer calibration to file", save_magnetometer_calibration))
@@ -535,6 +618,7 @@ def main():
     menu.append_item(FunctionItem("Load calibration from file", load_calibration))
     menu.append_item(FunctionItem("Track angular distance to random calibration point", track_random))
     menu.append_item(FunctionItem("Track inclination and heading angles", track_inclination_and_heading))
+    menu.append_item(FunctionItem("Track Madgwick", track_madgwick))
     menu.show()
 
 
