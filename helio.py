@@ -469,10 +469,12 @@ def track_inclination_and_heading():
             m_horizontal = projection_on_plane(m, a)
             # heading is angle between these two projected vectors in the horizontal plane
             heading = np.degrees(angle_between_vectors(y_horizontal, m_horizontal))
-            print("elevation: {:4.1f} - heading: {:4.1f}".format(elevation, heading), end="\r")
+            # magnetic inclincation is the angle between m and m_horizontal
+            magnetic_inclination = np.degrees(angle_between_vectors(m, m_horizontal))
+            print("elevation: {:4.1f} - heading: {:4.1f} - magnetic inclination: {:4.1f}".format(elevation, heading, magnetic_inclination), end="\r")
             time.sleep(0.1)
     except KeyboardInterrupt:
-        return
+        pass
 
 
 
@@ -496,7 +498,7 @@ def track_random():
             print("azimut: {:4.1f} - heading: {:4.1f}".format(aangle, tangle), end="\r")
             time.sleep(0.1)
     except KeyboardInterrupt:
-        return
+        pass
 
 
 
