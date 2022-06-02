@@ -8,7 +8,8 @@
 
 import adafruit_fxos8700
 import adafruit_fxas21002c
-from ahrs.filters import Madgwick
+from ahrs import Quaternion
+from ahrs.filters import Madgwick 
 import board
 import csv
 from gpiozero import Motor
@@ -554,7 +555,7 @@ def track_madgwick():
             q_now = madgwick.updateMARG(q_previous, gyr=g, acc=a, mag=m, dt=time_delay)
             time_previous = time_now
             q_previous = q_now
-            e = q_now.to_angles()
+            e = Quaternion(q_now).to_angles()
             print("roll (elevation): {:4.1f} - pitch: {:4.1f} - yaw (heading): {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
     except KeyboardInterrupt:
         pass
@@ -622,6 +623,8 @@ def main():
     terminal_menu = TerminalMenu([option[0] for option in options])
     while True:
         choice = terminal_menu.show()
+        if not choice:
+            break
         options[choice][1]()  # run the function stored as second element in the chosen row of options
 
 
