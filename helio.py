@@ -9,7 +9,7 @@
 import adafruit_fxos8700
 import adafruit_fxas21002c
 from ahrs import Quaternion
-from ahrs.filters import Madgwick 
+from ahrs.filters import Madgwick, Mahony
 import board
 import csv
 from gpiozero import Motor
@@ -300,7 +300,7 @@ class FXOS8700_ms(object):
     def __del__(self):
         pass
 
-    def read(self, number_of_readouts=48):
+    def read(self, number_of_readouts=1):
         ''' Get a sample.
 
             Returns
@@ -545,7 +545,7 @@ def track_madgwick():
     madgwick = Madgwick()
     try:
         time_previous = time.time()
-        q_previous = [1.0, 0.0, 0.0, 0.0]
+        q_previous = np.array([1.0, 0.0, 0.0, 0.0])
         while True:
             a = accelerometer.read_ms2()
             m = magnetometer.read_nT()
@@ -553,6 +553,27 @@ def track_madgwick():
             time_now = time.time()
             time_delay = time_now - time_previous
             q_now = madgwick.updateMARG(q_previous, gyr=g, acc=a, mag=m, dt=time_delay)
+            time_previous = time_now
+            q_previous = q_now
+            e = Quaternion(q_now).to_angles()
+            print("roll (elevation): {:4.1f} - pitch: {:4.1f} - yaw (heading): {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
+    except KeyboardInterrupt:
+        pass
+
+
+def track_mahony():
+    global accelerometer, magnetometer, gyroscope
+    mahony = Mahony()
+    try:
+        time_previous = time.time()
+        q_previous = np.array([1.0, 0.0, 0.0, 0.0])
+        while True:
+            a = accelerometer.read_ms2()
+            m = magnetometer.read_nT()
+            g = gyroscope.read_rads()
+            time_now = time.time()
+            time_delay = time_now - time_previous
+            q_now = mahony.updateMARG(q_previous, gyr=g, acc=a, mag=m, dt=time_delay)
             time_previous = time_now
             q_previous = q_now
             e = Quaternion(q_now).to_angles()
@@ -618,7 +639,8 @@ def main():
         ['Load calibration from file', load_calibration],
         ['Track angular distance to random calibration point', track_random],
         ['Track inclination and heading angles', track_inclination_and_heading],
-        ['Track Madgwick', track_madgwick]
+        ['Track Madgwick', track_madgwick],
+        ['Track Mahony', track_mahony]
     ]
     terminal_menu = TerminalMenu([option[0] for option in options])
     while True:
