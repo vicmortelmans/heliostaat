@@ -100,32 +100,30 @@ class Magnetometer(object):
         self.b   = np.zeros([3, 1])
         self.A_1 = np.eye(3)
         self._calibration_s = []  # list of raw sensor readings during calibration
-        self._calibration_n = 0  # number of readings during calibration
         self._calibration_complete = None
 
-    def read(self):
+    def read_raw(self):
         ''' Get a sample.
 
             Returns
             -------
             s : np.array
-                The reading as a unit vector [x,y,z] (corrected if performed calibration).
+                The reading in uT (not corrected).
         '''
-        s_vert = np.array(self.sensor.read()).reshape(3, 1)  # vertical array
+        return np.array(self.sensor.read())
+
+    def read_cal(self):
+        ''' Get a sample.
+
+            Returns
+            -------
+            s : np.array
+                The reading in uT (corrected if performed calibration).
+        '''
+        s_vert = self.read_raw().reshape(3, 1)  # vertical array
         s_vert = np.dot(self.A_1, s_vert - self.b)
         s = s_vert[:,0]
-        return s / np.linalg.norm(s)
-
-    def read_nT(self):
-        ''' Get a sample.
-
-            Returns
-            -------
-            s : np.array
-                The readings in nano-Tesla 
-        '''
-        return 1000 * np.array(self.sensor.read())
-
+        return s
 
     def launch_calibration(self):
         ''' Performs calibration, actually only the loop collecting the data,
@@ -139,7 +137,6 @@ class Magnetometer(object):
             logging.error("Trying to launch calibration before previous one finished!")
             return
         self._calibration_s = []
-        self._calibration_n = 0
         self._calibration_complete = False
         threading.Thread(target=self.__collect_calibration_data).start()
 
@@ -147,8 +144,9 @@ class Magnetometer(object):
     def __collect_calibration_data(self):
         logging.info("Starting to collect samples for magnetometer calibration in thread")
         while self._calibration_complete == False:
-            self._calibration_s.append(self.sensor.read())
-            self._calibration_n += 1
+            m = self.read_raw()  # sample in uT
+            self._calibration_s.append(m)
+            print("x,y,z: {:8.1f},{:8.1f},{:8.1f}".format(m[0], m[1], m[2]), end="\r")
         logging.info("Stopped collecting samples for magnetometer calibration in thread")
 
 
@@ -161,8 +159,14 @@ class Magnetometer(object):
         # finish reading sensor data
         self._calibration_complete = True
         s = self._calibration_s
-        n = self._calibration_n
-        logging.info(f"Collected {n} samples for magnetometer calibration")
+        count = len(self._calibration_s)
+        logging.info(f"Collected {count} samples for magnetometer calibration")
+
+        # average strength
+        strength = 0
+        for v in s:
+            strength += np.linalg.norm(v) / count
+        logging.info(f"Average strength of the samples is {strength} nT")
 
         # ellipsoid fit
         s = np.array(s).T
@@ -172,7 +176,7 @@ class Magnetometer(object):
         # note: some implementations of sqrtm return complex type, taking real
         M_1 = linalg.inv(M)
         self.b = -np.dot(M_1, n)
-        self.A_1 = np.real(1 / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
+        self.A_1 = np.real(49.081 / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
                            linalg.sqrtm(M))
 
         # clear way for next calibration
@@ -245,13 +249,13 @@ class Magnetometer(object):
         E = np.dot(linalg.inv(C),
                    S_11 - np.dot(S_12, np.dot(linalg.inv(S_22), S_21)))
 
-        E_w, E_v = linalg.eig(E)
+        E_w, E_v = np.linalg.eig(E)
 
         v_1 = E_v[:, np.argmax(E_w)]
         if v_1[0] < 0: v_1 = -v_1
 
         # v_2 (eq. 13, solution)
-        v_2 = np.dot(np.dot(-linalg.inv(S_22), S_21), v_1)
+        v_2 = np.dot(np.dot(-np.linalg.inv(S_22), S_21), v_1)
 
         # quadric-form parameters
         M = np.array([[v_1[0], v_1[3], v_1[4]],
@@ -406,6 +410,12 @@ def load_magnetometer_calibration():
     magnetometer.load_calibration()
 
 
+def print_magnetometer_calibration():
+    global magnetometer
+    print(magnetometer.A_1)
+    print(magnetometer.b)
+
+
 def calibrate():
     global cal
     logging.info("Start calibration")
@@ -515,12 +525,19 @@ def angle_between_vectors(v1, v2):
     return np.arccos(np.dot(v1_unit, v2_unit))
 
 
+def angle_between_vector_and_plane(v, n):
+    '''Returns the angle between v and the plane defined by it's normal vector n
+    '''
+    vp = projection_on_plane(v, n)
+    return angle_between_vectors(v, vp)
+
+
 def track_inclination_and_heading():
     global accelerometer, magnetometer
     try:
         while True:
             a = accelerometer.read()
-            m = magnetometer.read()
+            m = magnetometer.read_cal()
             vertical = np.array([-1,0,0])  # X-axis is vertical pointing up when collapsed; depends on how the sensor is mounted!
             # elevation is the angle between a and vertical
             elevation = np.degrees(angle_between_vectors(a, vertical))
@@ -548,15 +565,15 @@ def track_madgwick():
         q_previous = np.array([1.0, 0.0, 0.0, 0.0])
         while True:
             a = accelerometer.read_ms2()
-            m = magnetometer.read_nT()
+            m = magnetometer.read_cal()  # in uT
             g = gyroscope.read_rads()
             time_now = time.time()
             time_delay = time_now - time_previous
-            q_now = madgwick.updateMARG(q_previous, gyr=g, acc=a, mag=m, dt=time_delay)
+            q_now = madgwick.updateMARG(q_previous, gyr=g, acc=a, mag=1000*m, dt=time_delay)
             time_previous = time_now
             q_previous = q_now
             e = Quaternion(q_now).to_angles()
-            print("roll (elevation): {:4.1f} - pitch: {:4.1f} - yaw (heading): {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
+            print("roll: {:4.1f} - pitch: {:4.1f} - yaw: {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
     except KeyboardInterrupt:
         pass
 
@@ -569,15 +586,30 @@ def track_mahony():
         q_previous = np.array([1.0, 0.0, 0.0, 0.0])
         while True:
             a = accelerometer.read_ms2()
-            m = magnetometer.read_nT()
+            m = magnetometer.read_cal()  # in uT
             g = gyroscope.read_rads()
             time_now = time.time()
             time_delay = time_now - time_previous
-            q_now = mahony.updateMARG(q_previous, gyr=g, acc=a, mag=m, dt=time_delay)
+            q_now = mahony.updateMARG(q_previous, gyr=g, acc=a, mag=1000*m, dt=time_delay)
             time_previous = time_now
             q_previous = q_now
             e = Quaternion(q_now).to_angles()
-            print("roll (elevation): {:4.1f} - pitch: {:4.1f} - yaw (heading): {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
+            print("roll: {:4.1f} - pitch: {:4.1f} - yaw: {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
+    except KeyboardInterrupt:
+        pass
+
+
+def track_magnetic():
+    global magnetometer
+    try:
+        while True:
+            m = magnetometer.read_cal()
+            xy = np.array([0, 0, 1])  # normal vector of XY plane
+            i = angle_between_vector_and_plane(m, xy)
+            xz = np.array([0, 1, 0])  # normal vector of XZ plane
+            h = angle_between_vector_and_plane(m, xz)
+            a = np.linalg.norm(m)
+            print("x,y,z: {:4.1f},{:4.1f},{:4.1f} - inclination (vs XY): {:4.1f} - heading (vs XZ): {:4.1f} - strength: {:8.1f}".format(m[0], m[1], m[2], np.degrees(i), np.degrees(h), a), end="\r")
     except KeyboardInterrupt:
         pass
 
@@ -634,18 +666,20 @@ def main():
         ['Calibrate magnetometer', calibrate_magnetometer],
         ['Save magnetometer calibration to file', save_magnetometer_calibration],
         ['Load magnetometer calibration from file', load_magnetometer_calibration],
+        ['Print magnetometer calibration', print_magnetometer_calibration],
         ['Calibrate', calibrate],
         ['Save calibration to file', save_calibration],
         ['Load calibration from file', load_calibration],
         ['Track angular distance to random calibration point', track_random],
         ['Track inclination and heading angles', track_inclination_and_heading],
         ['Track Madgwick', track_madgwick],
-        ['Track Mahony', track_mahony]
+        ['Track Mahony', track_mahony],
+        ['Track magnetic sensor', track_magnetic]
     ]
     terminal_menu = TerminalMenu([option[0] for option in options])
     while True:
         choice = terminal_menu.show()
-        if not choice:
+        if type(choice) != int:
             break
         options[choice][1]()  # run the function stored as second element in the chosen row of options
 
