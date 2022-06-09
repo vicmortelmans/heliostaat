@@ -14,6 +14,9 @@ import board
 import csv
 from gpiozero import Motor
 import logging
+import matplotlib
+#matplotlib.use('gtkagg')
+import matplotlib.pyplot as plt
 import numpy as np
 import random
 from scipy import linalg, signal
@@ -23,7 +26,7 @@ import time
 import vg
 
 # Setup logging
-logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.INFO)
 
 # Setup motors
 MOTOR_TRAVEL_TIME = 10  # 30 seconds, 10 for speeding up durig debugging
@@ -125,87 +128,89 @@ class Magnetometer(object):
         s = s_vert[:,0]
         return s
 
-    def launch_calibration(self):
-        ''' Performs calibration, actually only the loop collecting the data,
-            running in a separate thread. It's monitoring the _calibration_complete
-            property, set by the finish_calibration method, to stop. 
-            The caller must take care of triggering the motion of the sensor and
-            of calling finish_calibraiton when done.
-        '''
-
-        if self._calibration_complete == True:
-            logging.error("Trying to launch calibration before previous one finished!")
-            return
-        self._calibration_s = []
-        self._calibration_complete = False
-        threading.Thread(target=self.__collect_calibration_data).start()
-
-
-    def __collect_calibration_data(self):
-        logging.info("Starting to collect samples for magnetometer calibration in thread")
-        while self._calibration_complete == False:
-            m = self.read_raw()  # sample in uT
-            self._calibration_s.append(m)
-            print("x,y,z: {:8.1f},{:8.1f},{:8.1f}".format(m[0], m[1], m[2]), end="\r")
-        logging.info("Stopped collecting samples for magnetometer calibration in thread")
-
-
-    def finish_calibration(self):
-        ''' Finishes the calibration, by setting the calibration_complete property
-            to finish data collection by the launch_calibration thread and then
-            calculating the calibration result
-        '''
-
-        # finish reading sensor data
-        self._calibration_complete = True
-        s = self._calibration_s
-        count = len(self._calibration_s)
-        logging.info(f"Collected {count} samples for magnetometer calibration")
-
-        # average strength
-        strength = 0
-        for v in s:
-            strength += np.linalg.norm(v) / count
-        logging.info(f"Average strength of the samples is {strength} nT")
-
-        # ellipsoid fit
-        s = np.array(s).T
-        M, n, d = self.__ellipsoid_fit(s)
-
-        # calibration parameters
-        # note: some implementations of sqrtm return complex type, taking real
-        M_1 = linalg.inv(M)
-        self.b = -np.dot(M_1, n)
-        self.A_1 = np.real(49.081 / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
-                           linalg.sqrtm(M))
-
-        # clear way for next calibration
-        self._calibration_complete = None
-
+    def calibrate_with_old_data(self):
+        logging.info("Using calibration data in magcal_data_raw.csv")
+        self._calibration_s = np.loadtxt('magcal_data_raw.csv')
+        self.finish_calibration()
 
     def save_calibration(self):
-        ''' Saves calibration data to two files magcal_b.npy and magcal_A_1.npy
+        ''' Saves calibration data to two files magcal_b.csv and magcal_A_1.csv
             in current directory
         '''
 
-        logging.debug("Magnetic calibration going to be saved to file")
-        np.save('magcal_b.npy', self.b)
-        np.save('magcal_A_1.npy', self.A_1)
+        logging.info("Magnetic calibration going to be saved to file")
+        np.savetxt('magcal_b.csv', self.b)
+        np.savetxt('magcal_A_1.csv', self.A_1)
         logging.info("Magnetic calibration saved to file")
 
 
     def load_calibration(self):
-        ''' Loads calibration data from two files magcal_b.npy and magcal_A_1.npy
+        ''' Loads calibration data from two files magcal_b.csv and magcal_A_1.csv
             in current directory
         '''
 
-        logging.debug("Magnetic calibration going to be loaded from file")
-        self.b = np.load('magcal_b.npy')
-        self.A_1 = np.load('magcal_A_1.npy')
+        logging.info("Magnetic calibration going to be loaded from file")
+        self.b = np.loadtxt('magcal_b.csv')
+        self.A_1 = np.loadtxt('magcal_A_1.csv')
         logging.info("Magnetic calibration loaded from file")
 
 
-    def __ellipsoid_fit(self, s):
+def launch_calibration(magnetometer):
+    ''' Performs calibration, actually only the loop collecting the data,
+        running in a separate thread. It's monitoring the _calibration_complete
+        property, set by the finish_calibration method, to stop. 
+        The caller must take care of triggering the motion of the sensor and
+        of calling finish_calibraiton when done.
+    '''
+
+    def collect_calibration_data():
+        logging.info("Starting to collect samples for magnetometer calibration in thread")
+        while magnetometer._calibration_complete == False:
+            m = magnetometer.read_raw()  # sample in uT
+            magnetometer._calibration_s.append(m)
+            print("x,y,z: {:8.1f},{:8.1f},{:8.1f}".format(m[0], m[1], m[2]), end="\r")
+        logging.info("Stopped collecting samples for magnetometer calibration in thread")
+
+    if magnetomter._calibration_complete == True:
+        logging.error("Trying to launch calibration before previous one finished!")
+        return
+    magnetometer._calibration_s = []
+    magnetometer._calibration_complete = False
+    threading.Thread(target=collect_calibration_data).start()
+
+
+def launch_calibration_precision(magnetometer, accelerometer):
+    ''' Performs calibration, actually only the loop collecting the data,
+        running in a separate thread. It's monitoring the _calibration_complete
+        property, set by the finish_calibration method, to stop. 
+        The caller must take care of triggering the motion of the sensor and
+        of calling finish_calibraiton when done.
+    '''
+
+    def collect_calibration_data():
+        logging.info("Starting to collect samples for magnetometer calibration in thread, including accelerometer data")
+        while magnetometer._calibration_complete == False:
+            m = magnetometer.read_raw()  # sample in uT
+            a = accelerometer.read_ms2()
+            magnetometer._calibration_s.append(m + a)  # list of 6 numbers !
+            print("magnetometer x,y,z: {:8.1f},{:8.1f},{:8.1f} - accelerometer x,y,z: {:8.1f},{:8.1f},{:8.1f}".format(m[0], m[1], m[2], a[0], a[1], a[2]), end="\r")
+        logging.info("Stopped collecting samples for magnetometer calibration in thread")
+
+    if magnetomter._calibration_complete == True:
+        logging.error("Trying to launch calibration before previous one finished!")
+        return
+    magnetometer._calibration_s = []
+    magnetometer._calibration_complete = False
+    threading.Thread(target=collect_calibration_data).start()
+
+
+def finish_calibration(magnetometer):
+    ''' Finishes the calibration, by setting the calibration_complete property
+        to finish data collection by the launch_calibration thread and then
+        calculating the calibration result
+    '''
+
+    def ellipsoid_fit(s):
         ''' Estimate ellipsoid parameters from a set of points.
 
             Parameters
@@ -267,6 +272,180 @@ class Magnetometer(object):
         d = v_2[3]
 
         return M, n, d
+
+    # finish reading sensor data
+    magnetometer._calibration_complete = True
+    s = np.array(magnetometer._calibration_s)
+    count = len(magnetometer._calibration_s)
+    np.savetxt('magcal_data_raw.csv', s)
+    logging.info(f"Collected {count} samples for magnetometer calibration (check magcal_data.csv)")
+
+    # average strength
+    strength = 0
+    for v in s:
+        strength += np.linalg.norm(v) / count
+    logging.info(f"Average strength of the samples is {strength} nT")
+
+    # ellipsoid fit
+    M, n, d = ellipsoid_fit(s.T)
+
+    # calibration parameters
+    # note: some implementations of sqrtm return complex type, taking real
+    M_1 = linalg.inv(M)
+    magnetometer.b = -np.dot(M_1, n)
+    magnetometer.A_1 = np.real(49.081 / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
+                       linalg.sqrtm(M))
+    scal = np.dot(magnetometer.A_1, s.T - magnetometer.b).T
+    np.savetxt('magcal_data_cal.csv', scal)
+
+    graphic_report(s, scal)
+
+    # clear way for next calibration
+    magnetometer._calibration_complete = None
+
+
+def finish_calibration_precision(magnetometer):
+    ''' Finishes the calibration, by setting the calibration_complete property
+        to finish data collection by the launch_calibration thread and then
+        calculating the calibration result
+    '''
+    def ellipsoid_iterate(mag,accel,verbose):
+
+        magCorrected=copy.deepcopy(mag)
+        # Obtain an estimate of the center and radius
+        # For an ellipse we estimate the radius to be the average distance
+        # of all data points to the center
+        (centerE,magR,magSTD)=ellipsoid_estimate2(mag,verbose)
+ 
+        #Work with normalized data
+        magScaled=mag/magR
+        centerScaled = centerE/magR
+ 
+        (accNorm,accR)=normalize3(accel)
+ 
+        params=np.zeros(12)
+        #Use the estimated offsets, but our transformation matrix is unity
+        params[0:3]=centerScaled
+        mat=np.eye(3)
+        params[3:12]=np.reshape(mat,(1,9))
+ 
+        #initial dot based on centered mag, scaled with average radius
+        magCorrected=applyParams12(magScaled,params)
+        (avgDot,stdDot)=mgDot(magCorrected,accNorm)
+ 
+        nSamples=len(magScaled)
+        sigma = errorEstimate(magScaled,accNorm,avgDot,params)
+        if verbose: print 'Initial Sigma',sigma
+ 
+        # pre allocate the data.  We do not actually need the entire
+        # D matrix if we calculate DTD (a 12x12 matrix) within the sample loop
+        # Also DTE (dimension 12) can be calculated on the fly.
+ 
+        D=np.zeros([nSamples,12])
+        E=np.zeros(nSamples)
+ 
+        #If numeric derivatives are used, this step size works with normalized data.
+        step=np.ones(12)
+        step/=5000
+ 
+        #Fixed number of iterations for testing.  In production you check for convergence
+ 
+        nLoops=5
+ 
+        for iloop in range(nLoops):
+            # Numeric or analytic partials each give the same answer
+            for ix in range(nSamples):
+                #(f0,pdiff)=numericPartialRow(magScaled[ix],accNorm[ix],avgDot,params,step,1)
+               (f0,pdiff)=analyticPartialRow(magScaled[ix],accNorm[ix],avgDot,params)
+               E[ix]=f0
+               D[ix]=pdiff
+            #Use the pseudo-inverse
+            DT=D.T
+            DTD=np.dot(DT,D)
+            DTE=np.dot(DT,E)
+            invDTD=inv(DTD)
+            deltas=np.dot(invDTD,DTE)
+
+
+            p2=params + deltas
+
+            sigma = errorEstimate(magScaled,accNorm,avgDot,p2)
+
+            # add some checking here on the behavior of sigma from loop to loop
+            # if satisfied, use the new set of parameters for the next iteration
+
+            params=p2
+
+            # recalculste gain (magR) and target dot product
+            magCorrected=applyParams12(magScaled,params)
+            (mc,mcR)=normalize3(magCorrected)
+            (avgDot,stdDot)=mgDot(mc,accNorm)
+            magR *= mcR
+            magScaled=mag/magR
+ 
+            if verbose:
+                print 'iloop',iloop,'sigma',sigma
+
+        return (params,magR)
+
+    # finish reading sensor data
+    magnetometer._calibration_complete = True
+    s = np.array(magnetometer._calibration_s)
+    count = len(magnetometer._calibration_s)
+    np.savetxt('magcal_data_raw.csv', s)
+    logging.info(f"Collected {count} samples for magnetometer calibration (check magcal_data.csv)")
+
+    # average strength
+    strength = 0
+    for v in s:
+        strength += np.linalg.norm(v) / count
+    logging.info(f"Average strength of the samples is {strength} nT")
+
+    #magnetometer.b = 
+    #magnetometer.A_1 = 
+
+    scal = np.dot(magnetometer.A_1, s.T - magnetometer.b).T
+    np.savetxt('magcal_data_cal.csv', scal)
+
+    graphic_report(s, scal)
+
+    # clear way for next calibration
+    magnetometer._calibration_complete = None
+
+
+def graphic_report(s, scal):
+    fig1, ((yz, xz), (yx, dummy)) = plt.subplots(2,2)
+    yz.set_xlabel('Y')
+    yz.set_ylabel('Z')
+    xz.set_xlabel('X')
+    xz.set_ylabel('Z')
+    yx.set_xlabel('Y')
+    yx.set_ylabel('X')
+    yz.set_aspect('equal')
+    xz.set_aspect('equal')
+    yx.set_aspect('equal')
+    yz.set_xlim([-80,80])
+    yz.set_ylim([-80,80])
+    xz.set_xlim([-80,80])
+    xz.set_ylim([-80,80])
+    yx.set_xlim([-80,80])
+    yx.set_ylim([-80,80])
+    yz.plot(s[:,1], s[:,2], 'r.', ms=3)
+    xz.plot(s[:,0], s[:,2], 'r.', ms=3)
+    yx.plot(s[:,1], s[:,0], 'r.', ms=3)
+    yz.plot(scal[:,1], scal[:,2], 'b.', ms=3)
+    xz.plot(scal[:,0], scal[:,2], 'b.', ms=3)
+    yx.plot(scal[:,1], scal[:,0], 'b.', ms=3)
+    def circle(r,phi):
+      return r*np.cos(phi), r*np.sin(phi)
+    phis=np.arange(0,6.28,0.01)
+    r = 49.081
+    c = np.array(circle(r, phis)).T
+    yz.plot(c[:,0], c[:,1], c='b',ls='-' )
+    xz.plot(c[:,0], c[:,1], c='b',ls='-' )
+    yx.plot(c[:,0], c[:,1], c='b',ls='-' )
+    fig1.savefig('magcal_data.pdf')
+
 
 
 class FXAS21002c(object):
@@ -353,19 +532,20 @@ class FXOS8700_as(object):
 
 
 def calibrate_magnetometer():
-    global magnetometer
-    magnetometer.launch_calibration()  # starts reading
+    global magnetometer, accelerometer
+    launch_calibration(magnetometer)  # starts reading
+    #launch_calibration_precision(magnetometer, accelerometer)  # starts reading
     logging.info("Start magnetometer calibration")
     logging.info("Start fully retract azimut motor")
-    MOTORA.backward()
+    #MOTORA.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
     logging.info("Stop fully retract azimut motor")
-    MOTORA.stop()
+    #MOTORA.stop()
     logging.info("Start fully retract heading motor")
-    MOTORH.backward()
+    #MOTORH.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
     logging.info("Stop fully retract heading motor")
-    MOTORH.stop()
+    #MOTORH.stop()
     motorh_due_forward = True
     remaining_amotor_travel_time = MOTOR_TRAVEL_TIME
     if NUMBER_OF_SCANS > 1:
@@ -373,32 +553,38 @@ def calibrate_magnetometer():
     while remaining_amotor_travel_time >= 0:
         if motorh_due_forward:
             logging.info("Start fully extend heading motor")
-            MOTORH.forward()
+            #MOTORH.forward()
             time.sleep(MOTOR_TRAVEL_TIME)
             logging.info("Stop fully extend heading motor")
-            MOTORH.stop()
+            #MOTORH.stop()
         else:
             logging.info("Start fully retract heading motor")
-            MOTORH.backward()
+            #MOTORH.backward()
             time.sleep(MOTOR_TRAVEL_TIME)
             logging.info("Stop fully retract heading motor")
-            MOTORH.stop()
+            #MOTORH.stop()
         if NUMBER_OF_SCANS == 1:
             break
         logging.info("Start partially extend azimut motor")
-        MOTORA.forward()
+        #MOTORA.forward()
         time.sleep(partial_amotor_travel_time)
-        MOTORA.stop()
+        #MOTORA.stop()
         logging.info("Stop partially extend azimut motor")
         remaining_amotor_travel_time -= partial_amotor_travel_time
     logging.info("Start fully retract azimut motor")
-    MOTORA.backward()
+    #MOTORA.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
     logging.info("Stop fully retract azimut motor")
     logging.info("Finish magnetometer calibration")
-    magnetometer.finish_calibration()  # stops reading
+    finish_calibration(magnetometer)  # stops reading
+    #finish_calibration_precision(magnetometer)  # stops reading
     logging.info("Finished magnetometer calibration")
     
+
+def calibrate_magnetometer_with_old_data():
+    global magnetometer
+    magnetometer.calibrate_with_old_data()
+
     
 def save_magnetometer_calibration():
     global magnetometer
@@ -573,7 +759,18 @@ def track_madgwick():
             time_previous = time_now
             q_previous = q_now
             e = Quaternion(q_now).to_angles()
-            print("roll: {:4.1f} - pitch: {:4.1f} - yaw: {:4.1f} - frequency: {:4.1f}".format(np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
+            '''
+            roll = e[0]
+            pitch = e[1]
+            yaw = e[2]
+            v = [np.cos(yaw) * np.cos(pitch), np.sin(yaw) * np.cos(pitch), np.sin(pitch)]
+            XY = np.array([0.0, 0.0, 1.0])
+            elevation = angle_between_vector_and_plane(v, XY)
+            X = np.array([1.0, 0.0, 0.0])
+            heading = angle_between_vectors(projection_on_plane(v, XY), X)
+            print("roll: {:4.1f} - pitch: {:4.1f} - yaw: {:4.1f} - heading: {:4.1f} - elevation: {:4.1f} - frequency: {:4.1f}".format(np.degrees(roll), np.degrees(pitch), np.degrees(yaw), np.degrees(heading), np.degrees(elevation), 1/time_delay), end="\r")
+            '''
+            print("a: {:6.1f},{:6.1f},{:6.1f} - m: {:6.1f},{:6.1f},{:6.1f} - g: {:6.1f},{:6.1f},{:6.1f} - roll: {:4.1f} - pitch: {:4.1f} - yaw: {:4.1f} - frequency: {:4.1f}".format(a[0], a[1], a[2], m[0], m[1], m[2], g[0], g[1], g[2], np.degrees(e[0]), np.degrees(e[1]), np.degrees(e[2]), 1/time_delay), end="\r")
     except KeyboardInterrupt:
         pass
 
@@ -657,6 +854,21 @@ def scan():
     return tcxs, tcys, tczs
 
 
+def pyplot_demo():
+    n = 1024
+    X = np.random.normal(0, 1, n)
+    Y = np.random.normal(0, 1, n)
+    Z = np.random.normal(0, 1, n)
+
+    fig1 = plt.figure(1)
+    ax1 = fig1.add_subplot(111, projection='3d')
+    ax1.scatter(X, Y, Z, s=5, color='r')
+    ax1.set_xlabel('X')
+    ax1.set_ylabel('Y')
+    ax1.set_zlabel('Z')
+    fig1.savefig('pyplot_demo.pdf')
+
+
 def main():
     global accelerometer, magnetometer, gyroscope
     accelerometer = Accelerometer()
@@ -664,6 +876,7 @@ def main():
     gyroscope = Gyroscope()
     options = [
         ['Calibrate magnetometer', calibrate_magnetometer],
+        ['Calibrate magnetometer with old data', calibrate_magnetometer_with_old_data],
         ['Save magnetometer calibration to file', save_magnetometer_calibration],
         ['Load magnetometer calibration from file', load_magnetometer_calibration],
         ['Print magnetometer calibration', print_magnetometer_calibration],
@@ -674,7 +887,8 @@ def main():
         ['Track inclination and heading angles', track_inclination_and_heading],
         ['Track Madgwick', track_madgwick],
         ['Track Mahony', track_mahony],
-        ['Track magnetic sensor', track_magnetic]
+        ['Track magnetic sensor', track_magnetic],
+        ['Pyplot demo', pyplot_demo]
     ]
     terminal_menu = TerminalMenu([option[0] for option in options])
     while True:
