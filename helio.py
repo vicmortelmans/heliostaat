@@ -103,7 +103,7 @@ class Magnetometer(object):
         # initialize values
         self.b   = np.zeros([3, 1])
         self.A_1 = np.eye(3)
-        self._calibration_s = []  # list of raw sensor readings during calibration
+        self._calibration_s = np.array([])  # list of raw sensor readings during calibration
         self._calibration_complete = None
 
     def read_raw(self):
@@ -162,15 +162,18 @@ def launch_calibration_teslabs():
     def collect_calibration_data():
         logging.info("Starting to collect samples for magnetometer calibration in thread")
         while magnetometer._calibration_complete == False:
-            m = magnetometer.read_raw()  # sample in uT
-            magnetometer._calibration_s.append(m)
+            m = magnetometer.read_raw()  # sample in uT as np.array
+            if np.shape(magnetometer._calibration_s)[0] == 0:
+                magnetometer._calibration_s = m  # first sample
+            else:
+                magnetometer._calibration_s = np.vstack([magnetometer._calibration_s, m])
             print("x,y,z: {:8.1f},{:8.1f},{:8.1f}".format(m[0], m[1], m[2]), end="\r")
         logging.info("Stopped collecting samples for magnetometer calibration in thread")
 
     if magnetometer._calibration_complete == True:
         logging.error("Trying to launch calibration before previous one finished!")
         return
-    magnetometer._calibration_s = []
+    magnetometer._calibration_s = np.array([])
     magnetometer._calibration_complete = False
     threading.Thread(target=collect_calibration_data).start()
 
@@ -186,16 +189,19 @@ def launch_calibration_precision():
     def collect_calibration_data():
         logging.info("Starting to collect samples for magnetometer calibration in thread, including accelerometer data")
         while magnetometer._calibration_complete == False:
-            m = magnetometer.read_raw()  # sample in uT
-            a = accelerometer.read_ms2()
-            magnetometer._calibration_s.append(m + a)  # list of 6 numbers !
+            m = magnetometer.read_raw()  # sample in uT as np.array
+            a = accelerometer.read_ms2()  # sample as np.array
+            if np.shape(magnetometer._calibration_s)[0] == 0:
+                magnetometer._calibration_s = [m[0], m[1], m[2], a[0], a[1], a[2]]  # first sample
+            else:
+                magnetometer._calibration_s = np.vstack([magnetometer._calibration_s, [m[0], m[1], m[2], a[0], a[1], a[2]]])  # list of 6 numbers !
             print("magnetometer x,y,z: {:8.1f},{:8.1f},{:8.1f} - accelerometer x,y,z: {:8.1f},{:8.1f},{:8.1f}".format(m[0], m[1], m[2], a[0], a[1], a[2]), end="\r")
         logging.info("Stopped collecting samples for magnetometer calibration in thread")
 
     if magnetometer._calibration_complete == True:
         logging.error("Trying to launch calibration before previous one finished!")
         return
-    magnetometer._calibration_s = []
+    magnetometer._calibration_s = np.array([])
     magnetometer._calibration_complete = False
     threading.Thread(target=collect_calibration_data).start()
 
@@ -271,10 +277,10 @@ def finish_calibration_teslabs():
 
     # finish reading sensor data
     magnetometer._calibration_complete = True
-    s = np.array(magnetometer._calibration_s)
-    count = len(magnetometer._calibration_s)
-    np.savetxt('magcal_data_raw_teslabs.csv', np.array(magnetometer._calibration_s))
-    logging.info(f"Collected {count} samples for magnetometer calibration (check magcal_data.csv)")
+    s = magnetometer._calibration_s
+    count = np.shape(magnetometer._calibration_s)[0]
+    np.savetxt('magcal_data_raw_teslabs.csv', magnetometer._calibration_s)
+    logging.info(f"Collected {count} samples for magnetometer calibration (check magcal_data_raw_teslabs.csv)")
 
     # average strength
     strength = 0
@@ -328,6 +334,17 @@ def finish_calibration_precision():
         stdMdg=np.std(mdg)
         # print avgMdg,stdMdg/avgMdg
         return (avgMdg,stdMdg)
+
+    def magDotAccErr(mag,acc,mdg,params): #offset and transformation matrix from parameters 
+        ofs=params[0:3]
+        mat=np.reshape(params[3:12],(3,3))
+        #subtract offset, then apply transformation matrix
+        mc=mag-ofs
+        mm=np.dot(mat,mc)
+        #calculate dot product from corrected mags
+        mdg1=np.dot(mm,acc)
+        err=mdg-mdg1
+        return err
 
     def errorEstimate(magN,accN,target,params):
         err2sum=0
@@ -448,9 +465,8 @@ def finish_calibration_precision():
             DT=D.T
             DTD=np.dot(DT,D)
             DTE=np.dot(DT,E)
-            invDTD=inv(DTD)
+            invDTD=np.linalg.inv(DTD)
             deltas=np.dot(invDTD,DTE)
-
 
             p2=params + deltas
 
@@ -474,11 +490,13 @@ def finish_calibration_precision():
 
     # finish reading sensor data
     magnetometer._calibration_complete = True
-    m = np.array(magnetometer._calibration_s)[:,0:3]
-    a = np.array(magnetometer._calibration_s)[:,4:6]
-    count = len(magnetometer._calibration_s)
-    np.savetxt('magcal_data_raw_precision.csv', np.array(magnetometer._calibration_s))
-    logging.info(f"Collected {count} samples for magnetometer calibration (check magcal_data.csv)")
+    m = magnetometer._calibration_s[:,0:3]  # columns 0,1,2
+    a = magnetometer._calibration_s[:,3:6]  # columns 3,4,5
+    count = np.shape(magnetometer._calibration_s)[0]
+    np.savetxt('magcal_data_raw_precision.csv', magnetometer._calibration_s)
+    logging.info(f"Collected {count} samples for magnetometer calibration (check magcal_data_raw_precision.csv)")
+    print(f"m {np.shape(m)}")
+    print(f"a {np.shape(a)}")
 
     # average strength
     strength = 0
@@ -489,12 +507,14 @@ def finish_calibration_precision():
     # calculate the calibration matrix and offset
     (params,magScale) = ellipsoid_iterate(m,a,1)
     magnetometer.b = params[0:3]*magScale
+    print(f"b {np.shape(magnetometer.b)}")
     magnetometer.A_1 = np.reshape(params[3:12],(3,3))
+    print(f"A_1 {np.shape(magnetometer.A_1)}")
 
-    scal = np.dot(magnetometer.A_1, s.T - magnetometer.b).T
-    np.savetxt('magcal_data_cal.csv', scal)
+    mcal = np.dot(magnetometer.A_1, m.T - magnetometer.b).T
+    np.savetxt('magcal_data_cal.csv', mcal)
 
-    graphic_report(s, scal)
+    graphic_report(m, mcal)
 
     # clear way for next calibration
     magnetometer._calibration_complete = None
@@ -503,14 +523,14 @@ def finish_calibration_precision():
 def calibrate_magnetometer_with_old_data_teslabs():
     global magnetometer
     logging.info("Using calibration data in magcal_data_raw_teslabs.csv")
-    magnetometer._calibration_s = np.loadtxt('magcal_data_raw_teslabs.csv').tolist()
+    magnetometer._calibration_s = np.loadtxt('magcal_data_raw_teslabs.csv')
     finish_calibration_teslabs()
 
 
 def calibrate_magnetometer_with_old_data_precision():
     global magnetometer
     logging.info("Using calibration data in magcal_data_raw_precision.csv")
-    magnetometer._calibration_s = np.loadtxt('magcal_data_raw_precision.csv').tolist()
+    magnetometer._calibration_s = np.loadtxt('magcal_data_raw_precision.csv')
     finish_calibration_precision()
 
 

@@ -13,5 +13,5 @@ echo ". n = noise. 0.01 is one percent of local field. : -n 0.003 "
 echo ".     Precision compasses are nearer to 0.001"
 echo ". "
 echo ". Because of the noise parameter, the data will be different each run."
-python gendat3.py -P 1.0 1.05 0.95 -c 0.0625 0.125 0.1675 -r 10 20 30 -a 0.015 0.015 0.010 -g 400 -n 0.003 > gdrun.dat
-python itermag3.py -f gdrun.dat
+python3 gendat3.py -P 1.0 1.05 0.95 -c 0.0625 0.125 0.1675 -r 10 20 30 -a 0.015 0.015 0.010 -g 400 -n 0.003 > gdrun.dat
+python3 itermag3.py -f gdrun.dat
