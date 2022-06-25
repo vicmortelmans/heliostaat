@@ -20,7 +20,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-from scipy import linalg, signal
+from scipy import linalg, signal, interpolate
 from simple_term_menu import TerminalMenu
 import threading
 import time
@@ -31,8 +31,8 @@ logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:
 
 # Setup motors
 MOTOR_TRAVEL_TIME = 10  # 30 seconds, 10 for speeding up durig debugging
-MOTORH = Motor(26, 20)
-MOTORA = Motor(19, 16)
+MOTOR_S = Motor(26, 20)
+MOTOR_T = Motor(19, 16)
 
 # Setup sensor
 i2c = board.I2C()  # uses board.SCL and board.SDA
@@ -286,7 +286,7 @@ def finish_calibration_teslabs():
     strength = 0
     for v in s:
         strength += np.linalg.norm(v) / count
-    logging.info(f"Average strength of the samples is {strength} nT")
+    logging.info(f"Average strength of the samples is {strength} uT")
 
     # ellipsoid fit
     M, n, d = ellipsoid_fit(s.T)
@@ -295,10 +295,12 @@ def finish_calibration_teslabs():
     # note: some implementations of sqrtm return complex type, taking real
     M_1 = linalg.inv(M)
     magnetometer.b = -np.dot(M_1, n)
+    print(f"b {magnetometer.b}")
     magnetometer.A_1 = np.real(49.081 / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) *
                        linalg.sqrtm(M))
+    print(f"A_1 {magnetometer.A_1}")
     scal = np.dot(magnetometer.A_1, s.T - magnetometer.b).T
-    np.savetxt('magcal_data_cal.csv', scal)
+    np.savetxt('magcal_data_cal_teslabs.csv', scal)
 
     graphic_report(s, scal)
 
@@ -312,107 +314,107 @@ def finish_calibration_precision():
         calculating the calibration result
     '''
     global magnetometer
-    def applyParams12(xyz,params):
-        # first three of twelve parameters are the x,y,z offsets
-        ofs=params[0:3]
-        # next nine are the components of the 3x3 transformation matrix
-        mat=np.reshape(params[3:12],(3,3))
-        # subtract ofs
-        xyzcentered=xyz-ofs
-      
-        xyzout=np.dot(mat,xyzcentered.T).T
-        
-        return xyzout
-
-    def mgDot(mag,acc):
-        ll=len(mag)
-        mdg=np.zeros(ll)
-        for ix in range(ll):
-            mdg[ix]=np.dot(mag[ix],acc[ix].T)
-        # print mdg   
-        avgMdg=np.mean(mdg)
-        stdMdg=np.std(mdg)
-        # print avgMdg,stdMdg/avgMdg
-        return (avgMdg,stdMdg)
-
-    def magDotAccErr(mag,acc,mdg,params): #offset and transformation matrix from parameters 
-        ofs=params[0:3]
-        mat=np.reshape(params[3:12],(3,3))
-        #subtract offset, then apply transformation matrix
-        mc=mag-ofs
-        mm=np.dot(mat,mc)
-        #calculate dot product from corrected mags
-        mdg1=np.dot(mm,acc)
-        err=mdg-mdg1
-        return err
-
-    def errorEstimate(magN,accN,target,params):
-        err2sum=0
-        nsamp=len(magN)
-        for ix in range(nsamp):
-            err=magDotAccErr(magN[ix],accN[ix],target,params)
-            err2sum += err*err
-            # print "%10.6f" % (err)
-        sigma=np.sqrt(err2sum/nsamp)  
-        return sigma
-
-    def analyticPartialRow(mag,acc,target,params):
-        err0=magDotAccErr(mag,acc,target,params)
-        # ll=len(params)
-        slopeArr=np.zeros(12)
-        slopeArr[0]=  -(params[3]*acc[0] + params[ 4]*acc[1] + params[ 5]*acc[2])
-        slopeArr[1]=  -(params[6]*acc[0] + params[ 7]*acc[1] + params[ 8]*acc[2])
-        slopeArr[2]=  -(params[9]*acc[0] + params[10]*acc[1] + params[11]*acc[2])
-        
-        slopeArr[ 3]= (mag[0]-params[0])*acc[0]
-        slopeArr[ 4]= (mag[1]-params[1])*acc[0]
-        slopeArr[ 5]= (mag[2]-params[2])*acc[0]
-        
-        slopeArr[ 6]= (mag[0]-params[0])*acc[1]
-        slopeArr[ 7]= (mag[1]-params[1])*acc[1]
-        slopeArr[ 8]= (mag[2]-params[2])*acc[1]
-        
-        slopeArr[ 9]= (mag[0]-params[0])*acc[2]
-        slopeArr[10]= (mag[1]-params[1])*acc[2]
-        slopeArr[11]= (mag[2]-params[2])*acc[2]
-        
-        return (err0,slopeArr)
-
-    def normalize3(xyz):
-        x=xyz[:,0]
-        y=xyz[:,1]
-        z=xyz[:,2]
-        rarr = np.sqrt(x*x + y*y + z*z)
-        ravg=np.mean(rarr)
-        xyzn=xyz/ravg
-        return (xyzn,ravg)
-
-    def estimateCenter3D( arr, mode=0):
-
-        # Slice off the component arrays
-        xx=arr[:,0]
-        yy=arr[:,1]
-        zz=arr[:,2]
-        
-        #average point is centered sufficiently with well sampled data
-        center=np.array([np.mean(xx),np.mean(yy),np.mean(zz)])
-           
-        #Center the samples
-        xc=xx-center[0]
-        yc=yy-center[1]
-        zc=zz-center[2]
-        
-        # Calculate distance from center for each point 
-        rc = np.sqrt(xc*xc + yc*yc + zc*zc)
-        # Take the average
-        radius = np.mean(rc)
-        
-        std = np.std(rc)
-           
-        return (center,radius,std)
-   
     def ellipsoid_iterate(mag,accel,verbose):
 
+        def applyParams12(xyz,params):
+            # first three of twelve parameters are the x,y,z offsets
+            ofs=params[0:3]
+            # next nine are the components of the 3x3 transformation matrix
+            mat=np.reshape(params[3:12],(3,3))
+            # subtract ofs
+            xyzcentered=xyz-ofs
+          
+            xyzout=np.dot(mat,xyzcentered.T).T
+            
+            return xyzout
+
+        def mgDot(mag,acc):
+            ll=len(mag)
+            mdg=np.zeros(ll)
+            for ix in range(ll):
+                mdg[ix]=np.dot(mag[ix],acc[ix].T)
+            # print mdg   
+            avgMdg=np.mean(mdg)
+            stdMdg=np.std(mdg)
+            # print avgMdg,stdMdg/avgMdg
+            return (avgMdg,stdMdg)
+
+        def magDotAccErr(mag,acc,mdg,params): #offset and transformation matrix from parameters 
+            ofs=params[0:3]
+            mat=np.reshape(params[3:12],(3,3))
+            #subtract offset, then apply transformation matrix
+            mc=mag-ofs
+            mm=np.dot(mat,mc)
+            #calculate dot product from corrected mags
+            mdg1=np.dot(mm,acc)
+            err=mdg-mdg1
+            return err
+
+        def errorEstimate(magN,accN,target,params):
+            err2sum=0
+            nsamp=len(magN)
+            for ix in range(nsamp):
+                err=magDotAccErr(magN[ix],accN[ix],target,params)
+                err2sum += err*err
+                # print "%10.6f" % (err)
+            sigma=np.sqrt(err2sum/nsamp)  
+            return sigma
+
+        def analyticPartialRow(mag,acc,target,params):
+            err0=magDotAccErr(mag,acc,target,params)
+            # ll=len(params)
+            slopeArr=np.zeros(12)
+            slopeArr[0]=  -(params[3]*acc[0] + params[ 4]*acc[1] + params[ 5]*acc[2])
+            slopeArr[1]=  -(params[6]*acc[0] + params[ 7]*acc[1] + params[ 8]*acc[2])
+            slopeArr[2]=  -(params[9]*acc[0] + params[10]*acc[1] + params[11]*acc[2])
+            
+            slopeArr[ 3]= (mag[0]-params[0])*acc[0]
+            slopeArr[ 4]= (mag[1]-params[1])*acc[0]
+            slopeArr[ 5]= (mag[2]-params[2])*acc[0]
+            
+            slopeArr[ 6]= (mag[0]-params[0])*acc[1]
+            slopeArr[ 7]= (mag[1]-params[1])*acc[1]
+            slopeArr[ 8]= (mag[2]-params[2])*acc[1]
+            
+            slopeArr[ 9]= (mag[0]-params[0])*acc[2]
+            slopeArr[10]= (mag[1]-params[1])*acc[2]
+            slopeArr[11]= (mag[2]-params[2])*acc[2]
+            
+            return (err0,slopeArr)
+
+        def normalize3(xyz):
+            x=xyz[:,0]
+            y=xyz[:,1]
+            z=xyz[:,2]
+            rarr = np.sqrt(x*x + y*y + z*z)
+            ravg=np.mean(rarr)
+            xyzn=xyz/ravg
+            return (xyzn,ravg)
+
+        def estimateCenter3D( arr, mode=0):
+
+            # Slice off the component arrays
+            xx=arr[:,0]
+            yy=arr[:,1]
+            zz=arr[:,2]
+            
+            #average point is centered sufficiently with well sampled data
+            center=np.array([np.mean(xx),np.mean(yy),np.mean(zz)])
+               
+            #Center the samples
+            xc=xx-center[0]
+            yc=yy-center[1]
+            zc=zz-center[2]
+            
+            # Calculate distance from center for each point 
+            rc = np.sqrt(xc*xc + yc*yc + zc*zc)
+            # Take the average
+            radius = np.mean(rc)
+            
+            std = np.std(rc)
+               
+            return (center,radius,std)
+   
         magCorrected=copy.deepcopy(mag)
         # Obtain an estimate of the center and radius
         # For an ellipse we estimate the radius to be the average distance
@@ -452,7 +454,7 @@ def finish_calibration_precision():
  
         #Fixed number of iterations for testing.  In production you check for convergence
  
-        nLoops=5
+        nLoops=10
  
         for iloop in range(nLoops):
             # Numeric or analytic partials each give the same answer
@@ -488,6 +490,153 @@ def finish_calibration_precision():
 
         return (params,magR)
 
+    def ellipsoid_iterate_symmetric(mag,verbose):
+          
+        def estimateCenter3D( arr, mode=0):
+
+            # Slice off the component arrays
+            xx=arr[:,0]
+            yy=arr[:,1]
+            zz=arr[:,2]
+            
+            #average point is centered sufficiently with well sampled data
+            center=np.array([np.mean(xx),np.mean(yy),np.mean(zz)])
+               
+            #Center the samples
+            xc=xx-center[0]
+            yc=yy-center[1]
+            zc=zz-center[2]
+            
+            # Calculate distance from center for each point 
+            rc = np.sqrt(xc*xc + yc*yc + zc*zc)
+            # Take the average
+            radius = np.mean(rc)
+            
+            std = np.std(rc)
+               
+            return (center,radius,std)
+       
+        def ofsMatToParam9(ofs,mat,params):
+
+            params[0:3]=ofs
+           
+            params[3]=mat[0,0]
+            params[4]=mat[1,1]
+            params[5]=mat[2,2]
+
+            params[6]=mat[0,1]
+            params[7]=mat[0,2]
+            params[8]=mat[1,2]
+          
+            return params
+
+        def radiusErr(mag,target,params):
+            #offset and transformation matrix from parameters
+            (ofs,mat)=param9toOfsMat(params)
+           
+            #subtract offset, then apply transformation matrix
+            mc=mag-ofs
+            mm=np.dot(mat,mc)
+
+            radius = np.sqrt(mm[0]*mm[0] +mm[1]*mm[1] + mm[2]*mm[2] )
+            err=target-radius
+            return err
+
+        def errorEstimateSymmetric(mag,target,params):
+            err2sum=0
+            nsamp=len(mag)
+            for ix in range(nsamp):
+                err=radiusErr(mag[ix],target,params)
+                err2sum += err*err
+                # print "%10.6f" % (err)
+            sigma=np.sqrt(err2sum/nsamp)  
+            return sigma  
+
+        def errFn(mag,acc,target,params,mode):
+            if mode == 1: return magDotAccErr(mag,acc,target,params)
+            return radiusErr(mag,target,params)
+
+        def numericPartialRow(mag,acc,target,params,step,mode):
+           
+            err0=errFn(mag,acc,target,params,mode)   
+           
+            ll=len(params)
+            slopeArr=np.zeros(ll)
+           
+            for ix in range(ll):
+           
+                params[ix]=params[ix]+step[ix]
+                errA=errFn(mag,acc,target,params,mode) 
+                params[ix]=params[ix]-2.0*step[ix]
+                errB=errFn(mag,acc,target,params,mode) 
+                params[ix]=params[ix]+step[ix]
+                slope= (errB-errA)/(2.0*step[ix])
+                slopeArr[ix]=slope
+              
+            return (err0,slopeArr)
+
+        def param9toOfsMat(params):
+            ofs=params[0:3]
+            mat=np.zeros(shape=(3,3))
+           
+            mat[0,0]=params[3]
+            mat[1,1]=params[4]
+            mat[2,2]=params[5]
+
+            mat[0,1]=params[6]
+            mat[0,2]=params[7]
+            mat[1,2]=params[8]
+
+            mat[1,0]=params[6]
+            mat[2,0]=params[7]
+            mat[2,1]=params[8]
+            # print ofs,mat
+            return (ofs,mat)
+
+        (centerE,magR,magSTD)=estimateCenter3D(mag)
+      
+        magScaled=mag/magR
+        centerScaled = centerE/magR
+         
+        params9=np.zeros(9)
+        ofs=np.zeros(3)
+        mat=np.eye(3)
+        params9=ofsMatToParam9(centerScaled,mat,params9)
+      
+        nSamples=len(magScaled)
+        sigma = errorEstimateSymmetric(magScaled,1,params9)
+        if verbose: print ('Initial Sigma',sigma)
+      
+        step=np.ones(9)  
+        step/=5000
+        D=np.zeros([nSamples,9])
+        E=np.zeros(nSamples)
+        nLoops=10
+
+        for iloop in range(nLoops):
+     
+            for ix in range(nSamples):
+                (f0,pdiff)=numericPartialRow(magScaled[ix],magScaled[ix],1,params9,step,0)
+                E[ix]=f0
+                D[ix]=pdiff
+            DT=D.T
+            DTD=np.dot(DT,D)
+            DTE=np.dot(DT,E)
+            invDTD=np.linalg.inv(DTD)
+            deltas=np.dot(invDTD,DTE)
+     
+            p2=params9 + deltas
+           
+            (ofs,mat)=param9toOfsMat(p2)
+            sigma = errorEstimateSymmetric(magScaled,1,p2)
+        
+            params9=p2
+         
+            if verbose: 
+                print ('iloop',iloop,'sigma',sigma)
+       
+        return (params9,magR)   
+
     # finish reading sensor data
     magnetometer._calibration_complete = True
     m = magnetometer._calibration_s[:,0:3]  # columns 0,1,2
@@ -502,17 +651,20 @@ def finish_calibration_precision():
     strength = 0
     for v in m:
         strength += np.linalg.norm(v) / count
-    logging.info(f"Average strength of the samples is {strength} nT")
+    logging.info(f"Average strength of the samples is {strength} uT")
 
     # calculate the calibration matrix and offset
-    (params,magScale) = ellipsoid_iterate(m,a,1)
-    magnetometer.b = params[0:3]*magScale
-    print(f"b {np.shape(magnetometer.b)}")
+    m_mg = m * 10  # algorithm expects mG i.o. uT
+    a_n = a / 9.81  # algorithm expects acceleration normalized to 1
+    (params,magScale) = ellipsoid_iterate(m_mg,a_n,1)
+    #(params,magScale) = ellipsoid_iterate_symmetric(m_mg,1)
+    magnetometer.b = np.vstack(params[0:3]*magScale) / 10  # convert back to uT
+    print(f"b {magnetometer.b}")
     magnetometer.A_1 = np.reshape(params[3:12],(3,3))
-    print(f"A_1 {np.shape(magnetometer.A_1)}")
+    print(f"A_1 {magnetometer.A_1}")
 
     mcal = np.dot(magnetometer.A_1, m.T - magnetometer.b).T
-    np.savetxt('magcal_data_cal.csv', mcal)
+    np.savetxt('magcal_data_cal_precision.csv', mcal)
 
     graphic_report(m, mcal)
 
@@ -663,45 +815,45 @@ def calibrate_magnetometer_generic(launch_calibration_function, finish_calibrati
     global magnetometer, accelerometer
     launch_calibration_function()  # starts reading
     logging.info("Start magnetometer calibration")
-    logging.info("Start fully retract azimut motor")
-    #MOTORA.backward()
+    logging.info("Start fully retract tilt motor")
+    #MOTOR_T.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
-    logging.info("Stop fully retract azimut motor")
-    #MOTORA.stop()
-    logging.info("Start fully retract heading motor")
-    #MOTORH.backward()
+    logging.info("Stop fully retract tilt motor")
+    #MOTOR_T.stop()
+    logging.info("Start fully retract swivel motor")
+    #MOTOR_S.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
-    logging.info("Stop fully retract heading motor")
-    #MOTORH.stop()
-    motorh_due_forward = True
+    logging.info("Stop fully retract swivel motor")
+    #MOTOR_S.stop()
+    forward = True
     remaining_amotor_travel_time = MOTOR_TRAVEL_TIME
     if NUMBER_OF_SCANS > 1:
         partial_amotor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
     while remaining_amotor_travel_time >= 0:
-        if motorh_due_forward:
-            logging.info("Start fully extend heading motor")
-            #MOTORH.forward()
+        if forward:
+            logging.info("Start fully extend swivel motor")
+            #MOTOR_S.forward()
             time.sleep(MOTOR_TRAVEL_TIME)
-            logging.info("Stop fully extend heading motor")
-            #MOTORH.stop()
+            logging.info("Stop fully extend swivel motor")
+            #MOTOR_S.stop()
         else:
-            logging.info("Start fully retract heading motor")
-            #MOTORH.backward()
+            logging.info("Start fully retract swivel motor")
+            #MOTOR_S.backward()
             time.sleep(MOTOR_TRAVEL_TIME)
-            logging.info("Stop fully retract heading motor")
-            #MOTORH.stop()
+            logging.info("Stop fully retract swivel motor")
+            #MOTOR_S.stop()
         if NUMBER_OF_SCANS == 1:
             break
-        logging.info("Start partially extend azimut motor")
-        #MOTORA.forward()
+        logging.info("Start partially extend tilt motor")
+        #MOTOR_T.forward()
         time.sleep(partial_amotor_travel_time)
-        #MOTORA.stop()
-        logging.info("Stop partially extend azimut motor")
+        #MOTOR_T.stop()
+        logging.info("Stop partially extend tilt motor")
         remaining_amotor_travel_time -= partial_amotor_travel_time
-    logging.info("Start fully retract azimut motor")
-    #MOTORA.backward()
+    logging.info("Start fully retract tilt motor")
+    #MOTOR_T.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
-    logging.info("Stop fully retract azimut motor")
+    logging.info("Stop fully retract tilt motor")
     logging.info("Finish magnetometer calibration")
     finish_calibration_function()  # stops reading
     logging.info("Finished magnetometer calibration")
@@ -723,45 +875,177 @@ def print_magnetometer_calibration():
     print(magnetometer.b)
 
 
+def swipe(duration=MOTOR_TRAVEL_TIME, direction=True, tstart=0):
+    # read sensor values for specified duration and return them with timestamps
+    global magnetometer, accelerometer
+    vs = []
+    ts = []
+    start_time = time.time()
+    while True:
+        m = magnetometer.read_raw()  # sample in uT as np.array
+        a = accelerometer.read_ms2()  # sample as np.array
+        vs.append((m[0], m[1], m[2], a[0], a[1], a[2]))
+        lapse_time = time.time() - start_time
+        ts.append(lapse_time)
+        if lapse_time >= duration: 
+            break
+        time.sleep(0.1)
+    logging.info(f"Performed a {duration}s swipe {'forward' if direction else 'backward'} collecting {len(ts)} samples")
+    return ts, vs  # python list, python list of 6-tuples
+
+def find_tail(xs, threshold):
+    # starting from the end, find the first value where change > threshold
+    i = len(xs) - 1
+    x = xs[i]
+    while abs(x - xs[i]) < threshold:
+        i--
+        if i == 0:
+            logging.error(f"No tail found")
+            break
+    logging.info(f"Tail found at value {i} of {len(xs)}")
+    return i + 1
+
+def trim_tail(vs):
+    # figure out when the values stabilize and return the index and the trimmed vectors
+    m_threshold = 2.0
+    a_threshold = 0.2
+    # reduce noisiness 
+    vs = np.array(vs)
+    l = len(vs)
+    mxs = signal.savgol_filter(vs[:,0], 481, 2)
+    mys = signal.savgol_filter(vs[:,1], 481, 2)
+    mzs = signal.savgol_filter(vs[:,2], 481, 2)
+    axs = signal.savgol_filter(vs[:,3], 481, 2)
+    ays = signal.savgol_filter(vs[:,4], 481, 2)
+    azs = signal.savgol_filter(vs[:,5], 481, 2)
+    tails = []
+    tails.append(find_tail(mxs, m_threshold))
+    tails.append(find_tail(mys, m_threshold))
+    tails.append(find_tail(mzs, m_threshold))
+    tails.append(find_tail(axs, a_threshold))
+    tails.append(find_tail(ays, a_threshold))
+    tails.append(find_tail(azs, a_threshold))
+    tails = np.extract(tails > l/2, tails)
+    logging.info(f"From 6 tails, {len(tails)} were valid")
+    tail = int(sum(tails)/len(tails))
+    logging.info(f"Average tail at value {tail} of {l}")
+    return tail, np.vstack((mxs[0:tail], mys[0:tail], mzs[0:tail], axs[0:tail], ays[0:tail], azs[0:tail])).T
+
+
+def normalized_offset_to_hinge_angle_function():
+    # generate an interpolation formula to convert a normalized offset (0-15cm scaled to 0-1) to an angle (0-pi/2 rads)
+    q1 = 37.90
+    q2 = 11.98
+    ang = np.linspace(0,np.pi/2,90)
+    off = np.sqrt((1/np.tan(ang/2)+q1)**2 + (1/np.tan(ang/2)+q2)**2 - 2*(1/np.tan(ang/2)+q1)*(1/np.tan(ang/2)+q2)*np.cos(ang))
+    return interpolate.interp1d(off, ang)
+
+
 def calibrate():
     global cal
-    logging.info("Start calibration")
-    logging.info("Start fully retract azimut motor")
-    MOTORA.backward()
+    global magnetometer, accelerometer
+    normalized_offset_to_hinge_angle = normalized_offset_to_hinged_angle_function()
+    logging.info("Start heliostat position calibration")
+    logging.info("Start fully retract tilt motor")
+    #MOTOR_T.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
-    logging.info("Stop fully retract azimut motor")
-    MOTORA.stop()
-    cal = { 'acxs': [], 'acys': [], 'aczs': [], 'tcxss': [], 'tcyss': [], 'tczss': [] }
-    remaining_amotor_travel_time = MOTOR_TRAVEL_TIME
+    logging.info("Stop fully retract tilt motor")
+    #MOTOR_T.stop()
+    logging.info("Start fully retract swivel motor")
+    #MOTOR_S.backward()
+    time.sleep(MOTOR_TRAVEL_TIME)
+    logging.info("Stop fully retract swivel motor")
+    #MOTOR_S.stop()
+
+    # swipes with constant tilt angle
+
+    forward = True
+    remaining_tilt_motor_travel_time = MOTOR_TRAVEL_TIME
     if NUMBER_OF_SCANS > 1:
-        partial_amotor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
-    while remaining_amotor_travel_time >= 0:
-        logging.info("Start fully retract heading motor")
-        MOTORH.backward()
-        time.sleep(MOTOR_TRAVEL_TIME)
-        logging.info("Stop fully retract heading motor")
-        MOTORH.stop()
-        acx, acy, acz = sensor.accelerometer
-        tcxs, tcys, tczs = scan()
-        cal['acxs'].append(acx)
-        cal['acys'].append(acy)
-        cal['aczs'].append(acz)
-        cal['tcxss'].append(signal.savgol_filter(tcxs, 9, 1))
-        cal['tcyss'].append(signal.savgol_filter(tcys, 9, 1))
-        cal['tczss'].append(signal.savgol_filter(tczs, 9, 1))
+        partial_tilt_motor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
+    while remaining_tilt_motor_travel_time >= 0:
+        if forward:
+            logging.info("Start fully extend swivel motor")
+            #MOTOR_S.forward()
+            ts, vs = swipe(duration=MOTOR_TRAVEL_TIME, direction=forward)
+            tmax, vs = trim_tail(vs)
+            ts = normalized_offset_to_hinge_angle(ts/tmax)
+            logging.info("Stop fully extend swivel motor")
+            #MOTOR_S.stop()
+        else:
+            logging.info("Start fully retract swivel motor")
+            #MOTOR_S.backward()
+            ts, vs = swipe(duration=MOTOR_TRAVEL_TIME, direction=forward)
+            # swiping backward, so flipping order of samples
+            ts = np.flip(ts)  # TODO
+            vs = np.flip(vs, 0)
+            tmax, vs = trim_tail(vs)
+            ts = normalized_offset_to_hinge_angle(ts/tmax)
+            logging.info("Stop fully retract swivel motor")
+            #MOTOR_S.stop()
+        forward = not forward
         if NUMBER_OF_SCANS == 1:
             break
-        logging.info("Start partially extend azimut motor")
-        MOTORA.forward()
-        time.sleep(partial_amotor_travel_time)
-        MOTORA.stop()
-        logging.info("Stop partially extend azimut motor")
-        remaining_amotor_travel_time -= partial_amotor_travel_time
-    logging.info("Start fully retract azimut motor")
-    MOTORA.backward()
+        logging.info("Start partially extend tilt motor")
+        #MOTOR_T.forward()
+        time.sleep(partial_tilt_motor_travel_time)
+        logging.info("Stop partially extend tilt motor")
+        #MOTOR_T.stop()
+        remaining_tilt_motor_travel_time -= partial_tilt_motor_travel_time
+    if not forward:
+        logging.info("Start fully retract swivel motor")
+        #MOTOR_S.backward()
+        time.sleep(MOTOR_TRAVEL_TIME)
+        logging.info("Stop fully retract swivel motor")
+        #MOTOR_S.stop()
+    logging.info("Start fully retract tilt motor")
+    #MOTOR_T.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
-    logging.info("Stop fully retract azimut motor")
-    logging.info("Stop calibration")
+    logging.info("Stop fully retract tilt motor")
+
+    # swipes with constant swivel angle
+
+    forward = True
+    remaining_swivel_motor_travel_time = MOTOR_TRAVEL_TIME
+    if NUMBER_OF_SCANS > 1:
+        partial_swivel_motor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
+    while remaining_swivel_motor_travel_time >= 0:
+        if forward:
+            logging.info("Start fully extend swivel motor")
+            #MOTOR_S.forward()
+            ts, vs = swipe(duration=MOTOR_TRAVEL_TIME, direction=forward)
+            tmax, vs = trim_tail(vs)
+            ts = normalized_offset_to_hinge_angle(ts/tmax)
+            logging.info("Stop fully extend swivel motor")
+            #MOTOR_S.stop()
+        else:
+            logging.info("Start fully retract swivel motor")
+            #MOTOR_S.backward()
+            ts, vs = swipe(duration=MOTOR_TRAVEL_TIME, direction=forward)
+            tmax, vs = trim_tail(vs)
+            ts = normalized_offset_to_hinge_angle(ts/tmax)
+            logging.info("Stop fully retract swivel motor")
+            #MOTOR_S.stop()
+        if NUMBER_OF_SCANS == 1:
+            break
+        logging.info("Start partially extend tilt motor")
+        #MOTOR_T.forward()
+        time.sleep(partial_swivel_motor_travel_time)
+        logging.info("Stop partially extend tilt motor")
+        #MOTOR_T.stop()
+        remaining_swivel_motor_travel_time -= partial_swivel_motor_travel_time
+    if not forward:
+        logging.info("Start fully retract swivel motor")
+        #MOTOR_S.backward()
+        time.sleep(MOTOR_TRAVEL_TIME)
+        logging.info("Stop fully retract swivel motor")
+        #MOTOR_S.stop()
+    logging.info("Start fully retract tilt motor")
+    #MOTOR_T.backward()
+    time.sleep(MOTOR_TRAVEL_TIME)
+    logging.info("Stop fully retract tilt motor")
+    logging.info("Finish magnetometer calibration")
+    logging.info("Finished heliostat position calibration")
 
 
 def save_calibration():
@@ -876,7 +1160,7 @@ def track_madgwick():
             g = gyroscope.read_rads()
             time_now = time.time()
             time_delay = time_now - time_previous
-            q_now = madgwick.updateMARG(q_previous, gyr=g, acc=a, mag=1000*m, dt=time_delay)
+            q_now = madgwick.updateMARG(q_previous, gyr=g, acc=a, mag=1000*m, dt=time_delay)  # algorithm wants nT i.o. uT
             time_previous = time_now
             q_previous = q_now
             e = Quaternion(q_now).to_angles()
@@ -908,7 +1192,7 @@ def track_mahony():
             g = gyroscope.read_rads()
             time_now = time.time()
             time_delay = time_now - time_previous
-            q_now = mahony.updateMARG(q_previous, gyr=g, acc=a, mag=1000*m, dt=time_delay)
+            q_now = mahony.updateMARG(q_previous, gyr=g, acc=a, mag=1000*m, dt=time_delay)  # algorithm wants nT i.o. uT
             time_previous = time_now
             q_previous = q_now
             e = Quaternion(q_now).to_angles()
@@ -948,7 +1232,7 @@ def track_random():
             acx, acy, acz = sensor.accelerometer
             aangle = vg.angle(np.array([racx, racy, racz]), np.array([acx, acy, acz]))
             tangle = vg.angle(np.array([rtcx, rtcy, rtcz]), np.array([tcx, tcy, tcz]))
-            print("azimut: {:4.1f} - heading: {:4.1f}".format(aangle, tangle), end="\r")
+            print("elevation: {:4.1f} - heading: {:4.1f}".format(aangle, tangle), end="\r")
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
@@ -961,16 +1245,16 @@ def scan():
     tcys = []
     tczs = []
     stop = time.time() + MOTOR_TRAVEL_TIME  # seconds
-    logging.info("Start full travel extending of heading motor")
-    MOTORH.forward()
+    logging.info("Start full travel extending of swivel motor")
+    MOTOR_S.forward()
     while time.time() < stop:
         tcx, tcy, tcz = sensor.magnetometer
         tcxs.append(tcx)
         tcys.append(tcy)
         tczs.append(tcz)
         time.sleep(0.1)
-    logging.info("Stop full travel extending of heading motor")
-    MOTORH.stop()
+    logging.info("Stop full travel extending of swivel motor")
+    MOTOR_S.stop()
     logging.info("Stop heading scan")
     return tcxs, tcys, tczs
 

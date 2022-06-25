@@ -753,9 +753,11 @@ if __name__ == "__main__":
       print ('Precision calculation on data in file ' + fn )
       (params,magScale) = ellipsoid_iterate(mag,acc,verbose)
       ofs=params[0:3]*magScale
+      print(f"ofs {np.shape(ofs)}")
       printVec(ofs,'%10.2f','Calculated center,Precision')
       
       mat=np.reshape(params[3:12],(3,3))
+      print(f"mat {np.shape(mat)}")
       printMat2(mat/mat[0,0],"%10.4f",'Calculated Transform Matrix, Precision')
       (errO,errPrecision,errInArr,errOutArrP)=calculateAngleError(mag,params,magScale,swingPoints)
       
