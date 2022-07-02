@@ -20,7 +20,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-from scipy import linalg, signal, interpolate
+from scipy import linalg, signal, interpolate, LinearNDInterpolator
 from simple_term_menu import TerminalMenu
 import threading
 import time
@@ -222,6 +222,15 @@ class FXOS8700_as(object):
         x, y, z = self.sensor.accelerometer
         return [x, y, z]
 
+def read_level():
+    # This function assumes both motors to be fully retracted !!
+    global accelerometer
+    a = accelerometer.read_ms2()
+    # level is angle between gravity vector and YZ plane
+    level = angle_between_vector_and_plane(a, np.array([1,0,0]))
+    # helio_tilt is angle between gravity vector and XZ plane
+    helio_tilt = angle_between_vector_and_plane(a, np.array([0,1,0]))
+    return level, helio_tilt
 
 def scan(duration=MOTOR_TRAVEL_TIME):
     # read sensor values for specified duration and return them with timestamps
@@ -344,10 +353,39 @@ def register(ss, ts, vs):
         cal['ts'] = np.hstack((cal['ts'], ts))
         cal['vs'] = np.vstack((cal['vs'], vs))
 
+def add_normal_to_cal(helio_tilt):
+    global cal
+    ht = helio_tilt  # readibility
+    for i in range(len(cal['vs'])):
+        s = cal['ss'][i]
+        t = cal['ts'][i]
+        x = -np.sin(s)*np.cos(ht)
+        y = np.cos(t)*np.cos(s)*np.cos(ht) - np.sin(t)*np.sin(ht)
+        z = np.sin(t)*np.sin(s)*np.cos(ht) + np.cos(t)*np.sin(ht)
+        if i == 0:
+            cal['ns'] = np.array([x, y, z])
+        else:
+            cal['ns'] = np.vstack((cal['ns'], [x, y, z]))
+
+def add_elevation_and_heading_to_cal():
+    global cal
+    for i in range(len(cal['vs'])):
+        # elevation is angle between normal vector of the mirror and the XY plane
+        e = angle_between_vector_and_plane(cal['ns'][i], [0,0,1])
+        # heading is angle between normal vector of the mirror and the XZ plane
+        h = angle_between_vector_and_plane(cal['ns'][i], [0,1,0])
+        if i == 0:
+            cal['es'] = e
+            cal['hs'] = h
+        else:
+            cal['es'] = np.hstack((cal['es'], e))
+            cal['hs'] = np.hstack((cal['hs'], h))
 
 def calibrate():
     global cal
-    global magnetometer, accelerometer
+    global interpol
+    global elevation  # function
+    global heading  # function
 
     cal = {}  # reset global variable containing the calibration values
 
@@ -357,6 +395,12 @@ def calibrate():
     logging.info("Start heliostat position calibration")
     retract(MOTOR=MOTOR_T, motorname="tilt")
     retract(MOTOR=MOTOR_S, motorname="swivel")
+
+    # calculate the tilt angle of the whole heliostat
+    level, helio_tilt = read_level()
+    if level > np.pi/20:
+        logging.warning(f"The heliostat isn't mounted level, it's {level} rad off.")
+    logging.info(f"The heliostat is mounted with a tilt of {helio_tilt} rad.")
 
     # sequence of forward partial swivel swipes with 0 tilt angle 
 
@@ -444,6 +488,15 @@ def calibrate():
         retract(MOTOR=MOTOR_T, motorname="tilt")
     retract(MOTOR=MOTOR_S, motorname="swivel")
 
+    # calculate for each sample the absolute normal vector of the mirror
+    # (in coordinate system with vertical Z, thus including the effect of the helio tilt)
+    add_normal_to_cal(helio_tilt)
+    # calculate for each sample the mirror elevation and heading
+    add_elevation_and_heading_to_cal()
+    # initialize interpolcation functions
+    elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    heading = LinearNDInterpolator(cal['vs'], cal['hs'])
+
     logging.info("Finish magnetometer calibration")
     logging.info("Finished heliostat position calibration")
 
@@ -454,13 +507,24 @@ def save_calibration():
     np.savetext('ss.csv', cal['ss'])
     np.savetext('ts.csv', cal['ts'])
     np.savetext('vs.csv', cal['vs'])
+    np.savetext('ns.csv', cal['ns'])
+    np.savetext('es.csv', cal['es'])
+    np.savetext('hs.csv', cal['hs'])
 
 
 def load_calibration():
     global cal
+    global elevation  # function
+    global heading  # function
     cal['ss'] = np.loadtext('ss.csv')
     cal['ts'] = np.loadtext('ts.csv')
     cal['vs'] = np.loadtext('vs.csv')
+    cal['ns'] = np.loadtext('ns.csv')
+    cal['es'] = np.loadtext('es.csv')
+    cal['hs'] = np.loadtext('hs.csv')
+    # initialize interpolcation functions
+    elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    heading = LinearNDInterpolator(cal['vs'], cal['hs'])
 
 
 def projection_on_vector(v1, v2):
@@ -550,10 +614,7 @@ def main():
         ['Calibrate', calibrate],
         ['Save calibration to file', save_calibration],
         ['Load calibration from file', load_calibration],
-        ['Track angular distance to random calibration point', track_random],
         ['Track inclination and heading angles', track_inclination_and_heading],
-        ['Track Madgwick', track_madgwick],
-        ['Track Mahony', track_mahony],
         ['Track magnetic sensor', track_magnetic],
         ['Pyplot demo', pyplot_demo]
     ]
