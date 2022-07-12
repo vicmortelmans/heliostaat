@@ -11,6 +11,7 @@ import adafruit_fxas21002c
 from ahrs import Quaternion
 from ahrs.filters import Madgwick, Mahony
 import board
+from bokeh.plotting import curdoc, figure
 import copy
 import csv
 from gpiozero import Motor
@@ -20,7 +21,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-from scipy import linalg, signal, interpolate, LinearNDInterpolator
+from scipy import linalg, signal, interpolate
+from scipy.interpolate import LinearNDInterpolator
 from simple_term_menu import TerminalMenu
 import threading
 import time
@@ -104,6 +106,17 @@ class Magnetometer(object):
                 The reading in uT (not corrected).
         '''
         return np.array(self.sensor.read())
+
+
+def plot(data):
+    global plot_circle
+    try: plot_circle
+    except NameError: plot_circle = None
+    if not plot_circle:
+        p = figure()
+        plot_circle = p.circle([],[])
+        curdoc().add_root(p)
+    plot_circle.data_source.stream(data)
 
 
 def graphic_report(s, scal):
@@ -247,6 +260,7 @@ def scan(duration=MOTOR_TRAVEL_TIME):
         if lapse_time >= duration: 
             break
         #time.sleep(0.1)
+        plot({'x': [lapse_time, lapse_time, lapse_time], 'y': [m[0], m[1], m[2]]})
     logging.info(f"Performed a {duration}s scan collecting {len(ts)} samples")
     return np.array(ts), np.array(vs)  # array, array of 6 columns
 
@@ -353,7 +367,11 @@ def register(ss, ts, vs):
         cal['ts'] = np.hstack((cal['ts'], ts))
         cal['vs'] = np.vstack((cal['vs'], vs))
 
-def add_normal_to_cal(helio_tilt):
+def register_array(array, name):
+    global cal
+    cal[name] = array
+
+def normal_vectors(helio_tilt):
     global cal
     ht = helio_tilt  # readibility
     for i in range(len(cal['vs'])):
@@ -363,23 +381,32 @@ def add_normal_to_cal(helio_tilt):
         y = np.cos(t)*np.cos(s)*np.cos(ht) - np.sin(t)*np.sin(ht)
         z = np.sin(t)*np.sin(s)*np.cos(ht) + np.cos(t)*np.sin(ht)
         if i == 0:
-            cal['ns'] = np.array([x, y, z])
+            ns = np.array([x, y, z])
         else:
-            cal['ns'] = np.vstack((cal['ns'], [x, y, z]))
+            ns = np.vstack((ns, [x, y, z]))
+    return ns
 
-def add_elevation_and_heading_to_cal():
+def elevations():
     global cal
     for i in range(len(cal['vs'])):
         # elevation is angle between normal vector of the mirror and the XY plane
         e = angle_between_vector_and_plane(cal['ns'][i], [0,0,1])
+        if i == 0:
+            es = np.array([e])
+        else:
+            es = np.hstack((es, e))
+    return es
+
+def headings():
+    global cal
+    for i in range(len(cal['vs'])):
         # heading is angle between normal vector of the mirror and the XZ plane
         h = angle_between_vector_and_plane(cal['ns'][i], [0,1,0])
         if i == 0:
-            cal['es'] = e
-            cal['hs'] = h
+            hs = np.array([h])
         else:
-            cal['es'] = np.hstack((cal['es'], e))
-            cal['hs'] = np.hstack((cal['hs'], h))
+            hs = np.hstack((hs, h))
+    return hs
 
 def calibrate():
     global cal
@@ -391,6 +418,8 @@ def calibrate():
 
     if NUMBER_OF_SCANS > 1:
         partial_motor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
+    else:
+        partial_motor_travel_time = MOTOR_TRAVEL_TIME
 
     logging.info("Start heliostat position calibration")
     retract(MOTOR=MOTOR_T, motorname="tilt")
@@ -490,9 +519,10 @@ def calibrate():
 
     # calculate for each sample the absolute normal vector of the mirror
     # (in coordinate system with vertical Z, thus including the effect of the helio tilt)
-    add_normal_to_cal(helio_tilt)
+    register_by_name(normal_vectors(helio_tilt), 'ns')
     # calculate for each sample the mirror elevation and heading
-    add_elevation_and_heading_to_cal()
+    register_by_name(elevations(), 'es')
+    register_by_name(headings(), 'hs')
     # initialize interpolcation functions
     elevation = LinearNDInterpolator(cal['vs'], cal['es'])
     heading = LinearNDInterpolator(cal['vs'], cal['hs'])
