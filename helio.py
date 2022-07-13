@@ -6,6 +6,10 @@
 
 # During development, it's invoked on command line
 
+# Run with bokeh:
+#   bokeh serve --allow-websocket-origin=nymea.local:5006 helio.py
+# Then open the website to continue the script
+
 import adafruit_fxos8700
 import adafruit_fxas21002c
 from ahrs import Quaternion
@@ -16,9 +20,9 @@ import copy
 import csv
 from gpiozero import Motor
 import logging
-import matplotlib
+#import matplotlib
 #matplotlib.use('gtkagg')
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import numpy as np
 import random
 from scipy import linalg, signal, interpolate
@@ -29,7 +33,8 @@ import time
 import vg
 
 # Setup logging
-logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.INFO)
+logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.INFO)
+# force=True is needed because bokeh sets the level down
 
 # Setup motors
 MOTOR_TRAVEL_TIME = 10  # 30 seconds, 10 for speeding up durig debugging
@@ -108,17 +113,19 @@ class Magnetometer(object):
         return np.array(self.sensor.read())
 
 
+def plot_init():
+    global plot_circle
+    p = figure()
+    plot_circle = p.circle([],[])
+    curdoc().add_root(p)
+
+
 def plot(data):
     global plot_circle
-    try: plot_circle
-    except NameError: plot_circle = None
-    if not plot_circle:
-        p = figure()
-        plot_circle = p.circle([],[])
-        curdoc().add_root(p)
     plot_circle.data_source.stream(data)
 
 
+'''
 def graphic_report(s, scal):
     fig1, ((yz, xz), (yx, dummy)) = plt.subplots(2,2)
     yz.set_xlabel('Y')
@@ -151,7 +158,7 @@ def graphic_report(s, scal):
     xz.plot(c[:,0], c[:,1], c='b',ls='-' )
     yx.plot(c[:,0], c[:,1], c='b',ls='-' )
     fig1.savefig('magcal_data.pdf')
-
+'''
 
 
 class FXAS21002c(object):
@@ -259,8 +266,8 @@ def scan(duration=MOTOR_TRAVEL_TIME):
         ts.append(lapse_time)
         if lapse_time >= duration: 
             break
-        #time.sleep(0.1)
         plot({'x': [lapse_time, lapse_time, lapse_time], 'y': [m[0], m[1], m[2]]})
+        #time.sleep(0.01)
     logging.info(f"Performed a {duration}s scan collecting {len(ts)} samples")
     return np.array(ts), np.array(vs)  # array, array of 6 columns
 
@@ -623,7 +630,7 @@ def track_magnetic():
     except KeyboardInterrupt:
         pass
 
-
+'''
 def pyplot_demo():
     n = 1024
     X = np.random.normal(0, 1, n)
@@ -637,16 +644,16 @@ def pyplot_demo():
     ax1.set_ylabel('Y')
     ax1.set_zlabel('Z')
     fig1.savefig('pyplot_demo.pdf')
-
+'''
 
 def main():
+    logging.info("Entering main()")
     options = [
         ['Calibrate', calibrate],
         ['Save calibration to file', save_calibration],
         ['Load calibration from file', load_calibration],
         ['Track inclination and heading angles', track_inclination_and_heading],
-        ['Track magnetic sensor', track_magnetic],
-        ['Pyplot demo', pyplot_demo]
+        ['Track magnetic sensor', track_magnetic]
     ]
     terminal_menu = TerminalMenu([option[0] for option in options])
     while True:
@@ -660,6 +667,6 @@ accelerometer = Accelerometer()
 magnetometer = Magnetometer()
 gyroscope = Gyroscope()
 
-if __name__ == "__main__":
-    main()
+plot_init()
+main()  # comment this out when importing while debugging
 
