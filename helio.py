@@ -37,7 +37,7 @@ logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%
 # force=True is needed because bokeh sets the level down
 
 # Setup motors
-MOTOR_TRAVEL_TIME = 10  # 30 seconds, 10 for speeding up durig debugging
+MOTOR_TRAVEL_TIME = 30  # 30 seconds, 10 for speeding up durig debugging
 MOTOR_S = Motor(26, 20)
 MOTOR_T = Motor(19, 16)
 
@@ -124,41 +124,6 @@ def plot(data):
     global plot_circle
     plot_circle.data_source.stream(data)
 
-
-'''
-def graphic_report(s, scal):
-    fig1, ((yz, xz), (yx, dummy)) = plt.subplots(2,2)
-    yz.set_xlabel('Y')
-    yz.set_ylabel('Z')
-    xz.set_xlabel('X')
-    xz.set_ylabel('Z')
-    yx.set_xlabel('Y')
-    yx.set_ylabel('X')
-    yz.set_aspect('equal')
-    xz.set_aspect('equal')
-    yx.set_aspect('equal')
-    yz.set_xlim([-80,80])
-    yz.set_ylim([-80,80])
-    xz.set_xlim([-80,80])
-    xz.set_ylim([-80,80])
-    yx.set_xlim([-80,80])
-    yx.set_ylim([-80,80])
-    yz.plot(s[:,1], s[:,2], 'r.', ms=3)
-    xz.plot(s[:,0], s[:,2], 'r.', ms=3)
-    yx.plot(s[:,1], s[:,0], 'r.', ms=3)
-    yz.plot(scal[:,1], scal[:,2], 'b.', ms=3)
-    xz.plot(scal[:,0], scal[:,2], 'b.', ms=3)
-    yx.plot(scal[:,1], scal[:,0], 'b.', ms=3)
-    def circle(r,phi):
-       return r*np.cos(phi), r*np.sin(phi)
-    phis=np.arange(0,6.28,0.01)
-    r = 49.081
-    c = np.array(circle(r, phis)).T
-    yz.plot(c[:,0], c[:,1], c='b',ls='-' )
-    xz.plot(c[:,0], c[:,1], c='b',ls='-' )
-    yx.plot(c[:,0], c[:,1], c='b',ls='-' )
-    fig1.savefig('magcal_data.pdf')
-'''
 
 
 class FXAS21002c(object):
@@ -266,7 +231,7 @@ def scan(duration=MOTOR_TRAVEL_TIME):
         ts.append(lapse_time)
         if lapse_time >= duration: 
             break
-        plot({'x': [lapse_time, lapse_time, lapse_time], 'y': [m[0], m[1], m[2]]})
+        #plot({'x': [lapse_time, lapse_time, lapse_time], 'y': [m[0], m[1], m[2]]})
         #time.sleep(0.01)
     logging.info(f"Performed a {duration}s scan collecting {len(ts)} samples")
     return np.array(ts), np.array(vs)  # array, array of 6 columns
@@ -284,7 +249,8 @@ def find_tail(xs, threshold):
     return i + 1
 
 def trim_tail(vs):
-    # figure out when the values stabilize and return the index and the trimmed vectors
+    # figure out when the values stabilize and 
+    # return the index and the trimmed and smoothened vectors
     m_threshold = 2.0
     a_threshold = 0.2
     # reduce noisiness 
@@ -297,6 +263,13 @@ def trim_tail(vs):
     axs = signal.savgol_filter(vs[:,3], 481, 2)
     ays = signal.savgol_filter(vs[:,4], 481, 2)
     azs = signal.savgol_filter(vs[:,5], 481, 2)
+    logging.info("Finding tails for resp. mx, my, mz, ax, ay, az")
+    plot({'x': np.linspace(1, len(mxs), len(mxs)), 'y': mxs})
+    plot({'x': np.linspace(1, len(mys), len(mys)), 'y': mys})
+    plot({'x': np.linspace(1, len(mzs), len(mzs)), 'y': mzs})
+    plot({'x': np.linspace(1, len(axs), len(axs)), 'y': axs})
+    plot({'x': np.linspace(1, len(ays), len(ays)), 'y': ays})
+    plot({'x': np.linspace(1, len(azs), len(azs)), 'y': azs})
     tails = []
     tails.append(find_tail(mxs, m_threshold))
     tails.append(find_tail(mys, m_threshold))
@@ -342,26 +315,30 @@ def process_swipe(times, vs, forward=True):
     
 def swipe(forward=None, MOTOR=None, motorname=None):
     logging.info(f"Start fully {'extending' if forward else 'retracting'} {motorname} motor")
-    #MOTOR.forward() if forward else MOTOR.backward()
+    MOTOR.forward() if forward else MOTOR.backward()
     times, vs = scan(duration=MOTOR_TRAVEL_TIME)
     logging.info(f"Stop fully {'extending' if forward else 'retracting'} {motorname} motor")
-    #MOTOR.stop()
+    MOTOR.stop()
     return times, vs
 
 def partial_swipe(forward=None, duration=None, MOTOR=None, motorname=None):
     logging.info(f"Start partially {'extending' if forward else 'retracting'} {motorname} motor")
-    #MOTOR.forward() if forward else MOTOR.backward()
+    MOTOR.forward() if forward else MOTOR.backward()
     times, vs = scan(duration=duration)
     logging.info(f"Stop partially {'extending' if forward else 'retracting'} {motorname} motor")
-    #MOTOR.stop()
+    MOTOR.stop()
     return times, vs
 
 def retract(MOTOR=None, motorname=None):
     logging.info(f"Start fully retract {motorname} motor")
-    #MOTOR.backward()
+    MOTOR.backward()
     time.sleep(MOTOR_TRAVEL_TIME)
     logging.info(f"Stop fully retract {motorname} motor")
-    #MOTOR.stop()
+    MOTOR.stop()
+
+def retract_motors():
+    retract(MOTOR=MOTOR_S, motorname="sweep")
+    retract(MOTOR=MOTOR_T, motorname="tilt")
 
 def register(ss, ts, vs):
     global cal
@@ -630,21 +607,6 @@ def track_magnetic():
     except KeyboardInterrupt:
         pass
 
-'''
-def pyplot_demo():
-    n = 1024
-    X = np.random.normal(0, 1, n)
-    Y = np.random.normal(0, 1, n)
-    Z = np.random.normal(0, 1, n)
-
-    fig1 = plt.figure(1)
-    ax1 = fig1.add_subplot(111, projection='3d')
-    ax1.scatter(X, Y, Z, s=5, color='r')
-    ax1.set_xlabel('X')
-    ax1.set_ylabel('Y')
-    ax1.set_zlabel('Z')
-    fig1.savefig('pyplot_demo.pdf')
-'''
 
 def main():
     logging.info("Entering main()")
@@ -653,7 +615,8 @@ def main():
         ['Save calibration to file', save_calibration],
         ['Load calibration from file', load_calibration],
         ['Track inclination and heading angles', track_inclination_and_heading],
-        ['Track magnetic sensor', track_magnetic]
+        ['Track magnetic sensor', track_magnetic],
+        ['Retract motors', retract_motors]
     ]
     terminal_menu = TerminalMenu([option[0] for option in options])
     while True:
