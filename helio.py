@@ -16,21 +16,21 @@ from ahrs import Quaternion
 from ahrs.filters import Madgwick, Mahony
 import board
 from bokeh.plotting import curdoc, figure
+from bokeh.models import Button
 import copy
 import csv
 from gpiozero import Motor
 import logging
-#import matplotlib
-#matplotlib.use('gtkagg')
-#import matplotlib.pyplot as plt
 import numpy as np
 import random
 from scipy import linalg, signal, interpolate
 from scipy.interpolate import LinearNDInterpolator
-from simple_term_menu import TerminalMenu
 import threading
 import time
 import vg
+
+handler_lock = threading.Semaphore(0)  # handler waiting for data
+generator_lock = threading.Semaphore(0)  # generator waiting for user pushing the button
 
 # Setup logging
 logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.INFO)
@@ -111,19 +111,6 @@ class Magnetometer(object):
                 The reading in uT (not corrected).
         '''
         return np.array(self.sensor.read())
-
-
-def plot_init():
-    global plot_circle
-    p = figure()
-    plot_circle = p.circle([],[])
-    curdoc().add_root(p)
-
-
-def plot(data):
-    global plot_circle
-    plot_circle.data_source.stream(data)
-
 
 
 class FXAS21002c(object):
@@ -231,7 +218,7 @@ def scan(duration=MOTOR_TRAVEL_TIME):
         ts.append(lapse_time)
         if lapse_time >= duration: 
             break
-        #plot({'x': [lapse_time, lapse_time, lapse_time], 'y': [m[0], m[1], m[2]]})
+        #plot(data={'x': [lapse_time, lapse_time, lapse_time], 'y': [m[0], m[1], m[2]]}, title="scan"))
         #time.sleep(0.01)
     logging.info(f"Performed a {duration}s scan collecting {len(ts)} samples")
     return np.array(ts), np.array(vs)  # array, array of 6 columns
@@ -264,12 +251,12 @@ def trim_tail(vs):
     ays = signal.savgol_filter(vs[:,4], 481, 2)
     azs = signal.savgol_filter(vs[:,5], 481, 2)
     logging.info("Finding tails for resp. mx, my, mz, ax, ay, az")
-    plot({'x': np.linspace(1, len(mxs), len(mxs)), 'y': mxs})
-    plot({'x': np.linspace(1, len(mys), len(mys)), 'y': mys})
-    plot({'x': np.linspace(1, len(mzs), len(mzs)), 'y': mzs})
-    plot({'x': np.linspace(1, len(axs), len(axs)), 'y': axs})
-    plot({'x': np.linspace(1, len(ays), len(ays)), 'y': ays})
-    plot({'x': np.linspace(1, len(azs), len(azs)), 'y': azs})
+    plot(data={'x': np.linspace(1, len(mxs), len(mxs)), 'y': mxs}, title="mxs")
+    plot(data={'x': np.linspace(1, len(mys), len(mys)), 'y': mys}, title="mys")
+    plot(data={'x': np.linspace(1, len(mzs), len(mzs)), 'y': mzs}, title="mzs")
+    plot(data={'x': np.linspace(1, len(axs), len(axs)), 'y': axs}, title="axs")
+    plot(data={'x': np.linspace(1, len(ays), len(ays)), 'y': ays}, title="ays")
+    plot(data={'x': np.linspace(1, len(azs), len(azs)), 'y': azs}, title="azs")
     tails = []
     tails.append(find_tail(mxs, m_threshold))
     tails.append(find_tail(mys, m_threshold))
@@ -391,6 +378,30 @@ def headings():
         else:
             hs = np.hstack((hs, h))
     return hs
+
+# THIS IS A BOKEH CALLBACK:
+def data_handler():
+    global plot_data
+    global plot_title
+    global plot_final
+    # wait until data is ready
+    print("Handler: waiting for data from generator")
+    handler_lock.acquire()
+    print("Handler: handling data from generator")
+    # add new graph
+    p = figure(title=plot_title)
+    plot_circle = p.circle([],[])
+    curdoc().add_root(p)
+    plot_circle.data_source.stream(plot_data)
+    # add the button for the user to trigger the callback that will draw the next graph
+    if not plot_final:
+        button = Button(label="Continue data generation", button_type="success")
+        button.on_click(data_handler)
+        curdoc().add_root(button)
+    # unlock the generator to continue generating data
+    print("Handler: unlocking generator")
+    generator_lock.release()
+    # actual drawing is only done after the callback finishes!
 
 def calibrate():
     global cal
@@ -607,9 +618,19 @@ def track_magnetic():
     except KeyboardInterrupt:
         pass
 
+def plot(data=None, title=None, final=False):
+    global plot_data
+    global plot_title
+    global plot_final
+    plot_data = data
+    plot_title = title
+    plot_final = final
+    handler_lock.release()
+    generator_lock.acquire()
 
-def main():
-    logging.info("Entering main()")
+# THIS RUNS IN A THREAD!
+def menu():
+    logging.info("Entering menu()")
     options = [
         ['Calibrate', calibrate],
         ['Save calibration to file', save_calibration],
@@ -618,18 +639,27 @@ def main():
         ['Track magnetic sensor', track_magnetic],
         ['Retract motors', retract_motors]
     ]
-    terminal_menu = TerminalMenu([option[0] for option in options])
     while True:
-        choice = terminal_menu.show()
-        if type(choice) != int:
-            break
-        options[choice][1]()  # run the function stored as second element in the chosen row of options
+        try:
+            for index, option in enumerate(options):
+                print(f"{index} - {option[0]}")
+            choice = int(input("Choose number: "))
+            options[choice][1]()  # run the function stored as second element in the chosen row of options
+        except:
+            continue
 
 # Setup sensor
 accelerometer = Accelerometer()
 magnetometer = Magnetometer()
 gyroscope = Gyroscope()
 
-plot_init()
-main()  # comment this out when importing while debugging
+# start menu in a separate thread
+t = threading.Thread(target=menu)
+t.start()
 
+# draw the start button
+button = Button(label="Start handling data", button_type="success")
+button.on_click(data_handler)
+curdoc().add_root(button)
+
+# MAIN SCRIPT ENDS HERE, SO BOKEH CAN BOOTSTRAP

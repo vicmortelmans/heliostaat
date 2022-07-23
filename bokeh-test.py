@@ -73,6 +73,8 @@ def data_generation():
 t = threading.Thread(target=data_generation)
 t.start()
 
+import pdb; pdb.set_trace()
+
 # draw the start button
 button = Button(label="Start handling data", button_type="success")
 button.on_click(data_handler)
