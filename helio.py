@@ -25,6 +25,8 @@ import numpy as np
 import random
 from scipy import linalg, signal, interpolate
 from scipy.interpolate import LinearNDInterpolator
+import scipy.ndimage
+import sys
 import threading
 import time
 import vg
@@ -224,56 +226,60 @@ def scan(duration=MOTOR_TRAVEL_TIME):
     return np.array(ts), np.array(vs)  # array, array of 6 columns
 
 def find_tail(xs, threshold):
+    minimum = np.min(xs)
+    maximum = np.max(xs)
+    if threshold > 1/100 * (maximum - minimum): 
+        logging.warning(f"Tail finding with threshold {threshold} in data with range {maximum - minimum} doesn't make sense")
+        return 0
+    else:
     # starting from the end, find the first value where change > threshold
-    i = len(xs) - 1
-    x = xs[i]
-    while abs(x - xs[i]) < threshold:
-        i = i-1
-        if i == 0:
-            logging.error(f"No tail found")
-            return 0
-    logging.info(f"Tail found at value {i} of {len(xs)}")
-    return i + 1
+        i = len(xs) - 1
+        x = xs[i]
+        running_min = x
+        running_max = x
+        while running_max - running_min < threshold:
+            i = i-1
+            x = xs[i]
+            if i == 0:
+                logging.error(f"No tail found")
+                return 0
+            else:
+                running_min = min(running_min, x)
+                running_max = max(running_max, x)
+        index = i + 1
+        logging.info(f"Tail found at index {i} based on threshold {threshold} in data with range {maximum - minimum}")
+        return index
 
 def trim_tail(vs):
     # figure out when the values stabilize and 
     # return the index and the trimmed and smoothened vectors
-    m_threshold = 2.0
-    a_threshold = 0.2
+    a_threshold = 0.003  # established based on visual inspection of readout graphs
     # reduce noisiness 
     vs = np.array(vs)
     l = len(vs)
     # smoothen the readings
-    mxs = signal.savgol_filter(vs[:,0], 481, 2)
-    mys = signal.savgol_filter(vs[:,1], 481, 2)
-    mzs = signal.savgol_filter(vs[:,2], 481, 2)
-    axs = signal.savgol_filter(vs[:,3], 481, 2)
-    ays = signal.savgol_filter(vs[:,4], 481, 2)
-    azs = signal.savgol_filter(vs[:,5], 481, 2)
-    logging.info("Finding tails for resp. mx, my, mz, ax, ay, az")
-    plot(data={'x': np.linspace(1, len(mxs), len(mxs)), 'y': mxs}, title="mxs")
-    plot(data={'x': np.linspace(1, len(mys), len(mys)), 'y': mys}, title="mys")
-    plot(data={'x': np.linspace(1, len(mzs), len(mzs)), 'y': mzs}, title="mzs")
-    plot(data={'x': np.linspace(1, len(axs), len(axs)), 'y': axs}, title="axs")
-    plot(data={'x': np.linspace(1, len(ays), len(ays)), 'y': ays}, title="ays")
-    plot(data={'x': np.linspace(1, len(azs), len(azs)), 'y': azs}, title="azs")
+    axs = scipy.ndimage.uniform_filter1d(vs[:,3], 500)
+    ays = scipy.ndimage.uniform_filter1d(vs[:,4], 500)
+    azs = scipy.ndimage.uniform_filter1d(vs[:,5], 500)
+    logging.info("Finding tails for resp. ax, ay, az")
+    length = len(axs)
+    plot(data={'x': np.arange(length), 'y': axs}, title="axs")
+    plot(data={'x': np.arange(length), 'y': ays}, title="ays")
+    plot(data={'x': np.arange(length), 'y': azs}, title="azs")
     tails = []
-    tails.append(find_tail(mxs, m_threshold))
-    tails.append(find_tail(mys, m_threshold))
-    tails.append(find_tail(mzs, m_threshold))
     tails.append(find_tail(axs, a_threshold))
     tails.append(find_tail(ays, a_threshold))
     tails.append(find_tail(azs, a_threshold))
     # for sanity, check if tails > 1/2
     tails = np.extract(np.greater(tails, l/2), tails)
-    logging.info(f"From 6 tails, {len(tails)} were valid")
+    logging.info(f"From 3 tails, {len(tails)} were valid")
     if tails.size == 0:
         logging.error("No valid tails found, readouts are probably flat, no trimming")
         tail = l
     else:
         tail = int(sum(tails)/len(tails))
         logging.info(f"Average tail at value {tail} of {l}")
-    return tail, np.vstack((mxs[0:tail], mys[0:tail], mzs[0:tail], axs[0:tail], ays[0:tail], azs[0:tail])).T
+    return tail, np.vstack((axs[0:tail], ays[0:tail], azs[0:tail])).T
 
 
 def normalized_offset_to_hinge_angle_function():
@@ -294,7 +300,7 @@ def process_swipe(times, vs, forward=True):
     times = times[0:timeindexmax]
     timemax = times[-1]  # last element = times[timeindexmax-1]
     if not forward:
-        # swiping backward, so flipping order of samples, because normalizing is direction-dependent!
+        # swiping backward, so flipping order of samples, because offset_to_hinge function is direction-dependent!
         times = np.flip(times)
         vs = np.flip(vs, 0)
     angs = normalized_offset_to_hinge_angle(times/timemax)
@@ -338,7 +344,7 @@ def register(ss, ts, vs):
         cal['ts'] = np.hstack((cal['ts'], ts))
         cal['vs'] = np.vstack((cal['vs'], vs))
 
-def register_array(array, name):
+def register_by_name(array, name):
     global cal
     cal[name] = array
 
@@ -385,9 +391,9 @@ def data_handler():
     global plot_title
     global plot_final
     # wait until data is ready
-    print("Handler: waiting for data from generator")
+    logging.info("Handler: waiting for data from generator")
     handler_lock.acquire()
-    print("Handler: handling data from generator")
+    logging.info("Handler: handling data from generator")
     # add new graph
     p = figure(title=plot_title)
     plot_circle = p.circle([],[])
@@ -399,7 +405,7 @@ def data_handler():
         button.on_click(data_handler)
         curdoc().add_root(button)
     # unlock the generator to continue generating data
-    print("Handler: unlocking generator")
+    logging.info("Handler: unlocking generator")
     generator_lock.release()
     # actual drawing is only done after the callback finishes!
 
@@ -417,8 +423,8 @@ def calibrate():
         partial_motor_travel_time = MOTOR_TRAVEL_TIME
 
     logging.info("Start heliostat position calibration")
-    retract(MOTOR=MOTOR_T, motorname="tilt")
-    retract(MOTOR=MOTOR_S, motorname="swivel")
+    #retract(MOTOR=MOTOR_T, motorname="tilt")
+    #retract(MOTOR=MOTOR_S, motorname="swivel")
 
     # calculate the tilt angle of the whole heliostat
     level, helio_tilt = read_level()
@@ -439,7 +445,7 @@ def calibrate():
             vs = np.vstack((vs, partial_vs))
             swipe_idxs.append(swipe_idxs[-1] + len(times))  
         ss, vs = process_swipe(times, vs, forward=True)
-        register(ss, np.full((1, len(ss)), 0), vs)  # ts are all zero
+        register(ss, np.full((1, len(ss)), 0)[0], vs)  # ts are all zero, full returns [[]], so I need [0]
         # make a list of the swivel angles for constant swivel angle
         s_angles = [ss[i] for i in swipe_idxs if i < len(ss)]  # the number angles may be lower than NUMBER_OF_SCANS
 
@@ -456,7 +462,7 @@ def calibrate():
             vs = np.vstack((vs, partial_vs))
             swipe_idxs.append(swipe_idxs[-1] + len(times))  
         ts, vs = process_swipe(times, vs, forward=True)
-        register(np.full((1, len(ts)), np.pi/2), ts, vs)  # ss are all 90 degrees
+        register(np.full((1, len(ts)), np.pi/2)[0], ts, vs)  # ss are all 90 degrees
         # make a list of the tilt angles for constant tilt angle
         t_angles = [ts[i] for i in swipe_idxs if i < len(ss)]  # the number angles may be lower than NUMBER_OF_SCANS
 
@@ -471,7 +477,7 @@ def calibrate():
             times = np.hstack((times, partial_times + swipe_times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
         ss, vs = process_swipe(times, vs, forward=False)
-        register(ss, np.full((1, len(ss)), np.pi/2), vs)  # ts are all 90 degrees
+        register(ss, np.full((1, len(ss)), np.pi/2)[0], vs)  # ts are all 90 degrees
 
     # sequence of backward partial tilt swipes with 0 swivel angle 
 
@@ -484,7 +490,7 @@ def calibrate():
             times = np.hstack((times, partial_times + swipe_times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
         ts, vs = process_swipe(times, vs, forward=True)
-        register(np.full((1, len(ts)), 0), ts, vs)  # ss are all 0
+        register(np.full((1, len(ts)), 0)[0], ts, vs)  # ss are all 0
 
     # swipes with constant tilt angle
 
@@ -493,7 +499,7 @@ def calibrate():
         partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_T, motorname="tilt")
         times, vs = swipe(forward=forward, MOTOR=MOTOR_S, motorname="swivel")
         ss, vs = process_swipe(times, vs, forward=forward)
-        register(ss, np.full((1, len(ss)), t), vs)  # ts are all t (from t_angles)
+        register(ss, np.full((1, len(ss)), t)[0], vs)  # ts are all t (from t_angles)
         forward = not forward  # reverse direction for next iteration
     if not forward:  # last swipe was forward
         retract(MOTOR=MOTOR_S, motorname="swivel")
@@ -506,7 +512,7 @@ def calibrate():
         partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_S, motorname="swivel")
         times, vs = swipe(forward=forward, MOTOR=MOTOR_T, motorname="tilt")
         ts, vs = process_swipe(times, vs, forward=forward)
-        register(np.full((1, len(ts)), s), ts, vs)  # ss are all s (from s_angles)
+        register(np.full((1, len(ts)), s)[0], ts, vs)  # ss are all s (from s_angles)
         forward = not forward  # reverse direction for next iteration
     if not forward:  # last swipe was forward
         retract(MOTOR=MOTOR_T, motorname="tilt")
@@ -637,7 +643,8 @@ def menu():
         ['Load calibration from file', load_calibration],
         ['Track inclination and heading angles', track_inclination_and_heading],
         ['Track magnetic sensor', track_magnetic],
-        ['Retract motors', retract_motors]
+        ['Retract motors', retract_motors],
+        ['Quit', sys.exit]
     ]
     while True:
         try:
@@ -645,7 +652,11 @@ def menu():
                 print(f"{index} - {option[0]}")
             choice = int(input("Choose number: "))
             options[choice][1]()  # run the function stored as second element in the chosen row of options
+        except SystemExit:
+            sys.exit()  # a bit silly, but the sys.exit() call from the menu 
+                        # is otherwise caught by the general exception
         except:
+            logging.exception("Procedure failed; returning to menu.")
             continue
 
 # Setup sensor
