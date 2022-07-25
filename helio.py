@@ -251,13 +251,16 @@ def find_tail(xs, threshold):
         return index
 
 def trim_tail(vs):
-    # figure out when the values stabilize and 
+    # figure out when the values stabilize (only using acceleration, much stabler signal!) and
     # return the index and the trimmed and smoothened vectors
     a_threshold = 0.003  # established based on visual inspection of readout graphs
     # reduce noisiness 
     vs = np.array(vs)
     l = len(vs)
     # smoothen the readings
+    mxs = scipy.ndimage.uniform_filter1d(vs[:,0], 500)
+    mys = scipy.ndimage.uniform_filter1d(vs[:,1], 500)
+    mzs = scipy.ndimage.uniform_filter1d(vs[:,2], 500)
     axs = scipy.ndimage.uniform_filter1d(vs[:,3], 500)
     ays = scipy.ndimage.uniform_filter1d(vs[:,4], 500)
     azs = scipy.ndimage.uniform_filter1d(vs[:,5], 500)
@@ -279,7 +282,7 @@ def trim_tail(vs):
     else:
         tail = int(sum(tails)/len(tails))
         logging.info(f"Average tail at value {tail} of {l}")
-    return tail, np.vstack((axs[0:tail], ays[0:tail], azs[0:tail])).T
+    return tail, np.vstack((mxs[0:tail], mys[0:tail], mzs[0:tail], axs[0:tail], ays[0:tail], azs[0:tail])).T
 
 
 def normalized_offset_to_hinge_angle_function():
@@ -291,6 +294,21 @@ def normalized_offset_to_hinge_angle_function():
     ang = np.hstack((0,ang))
     off = np.hstack((0,off))
     return interpolate.interp1d(off, ang)
+
+def downsample_columns(vs, new_nrows):
+    ncols = vs.shape[1]
+    nrows = vs.shape[0]
+    new_vs = np.empty([new_nrows, ncols])
+    for col in range(ncols):
+        interpolation = interpolate.interp1d(np.arange(nrows),vs[:,col])
+        new_vs[:,col] = interpolation(np.linspace(0, nrows-1, new_nrows))
+    return new_vs
+
+def downsample_array(a, new_n):
+    n = len(a)
+    interpolation = interpolate.interp1d(np.arange(n),a)
+    new_a = interpolation(np.linspace(0, n-1, new_n))
+    return new_a
 
 def process_swipe(times, vs, forward=True):
     # trim the readouts to where the movement stops (= 90 degrees)
@@ -304,6 +322,10 @@ def process_swipe(times, vs, forward=True):
         times = np.flip(times)
         vs = np.flip(vs, 0)
     angs = normalized_offset_to_hinge_angle(times/timemax)
+    # downsample
+    number_of_samples = int(len(angs) / 40)  # a complete swipe delivers ~4000 raw samples, downsample to ~100 
+    vs = downsample_columns(vs, number_of_samples)
+    angs = downsample_array(angs, number_of_samples)
     return angs, vs
     
 def swipe(forward=None, MOTOR=None, motorname=None):
@@ -335,6 +357,7 @@ def retract_motors():
 
 def register(ss, ts, vs):
     global cal
+    logging.info(f"Registering {len(ss)} samples")
     if not cal:
         cal['ss'] = ss
         cal['ts'] = ts
@@ -346,6 +369,7 @@ def register(ss, ts, vs):
 
 def register_by_name(array, name):
     global cal
+    logging.info(f"Registering {len(array)} samples as {name}")
     cal[name] = array
 
 def normal_vectors(helio_tilt):
@@ -390,10 +414,11 @@ def data_handler():
     global plot_data
     global plot_title
     global plot_final
-    # wait until data is ready
-    logging.info("Handler: waiting for data from generator")
-    handler_lock.acquire()
-    logging.info("Handler: handling data from generator")
+    if __name__.startswith('bokeh'):
+        # wait until data is ready
+        logging.info("Handler: waiting for data from generator")
+        handler_lock.acquire()
+        logging.info("Handler: handling data from generator")
     # add new graph
     p = figure(title=plot_title)
     plot_circle = p.circle([],[])
@@ -404,9 +429,10 @@ def data_handler():
         button = Button(label="Continue data generation", button_type="success")
         button.on_click(data_handler)
         curdoc().add_root(button)
-    # unlock the generator to continue generating data
-    logging.info("Handler: unlocking generator")
-    generator_lock.release()
+    if __name__.startswith('bokeh'):
+        # unlock the generator to continue generating data
+        logging.info("Handler: unlocking generator")
+        generator_lock.release()
     # actual drawing is only done after the callback finishes!
 
 def calibrate():
@@ -520,12 +546,17 @@ def calibrate():
 
     # calculate for each sample the absolute normal vector of the mirror
     # (in coordinate system with vertical Z, thus including the effect of the helio tilt)
+    logging.info("Register ns")
     register_by_name(normal_vectors(helio_tilt), 'ns')
     # calculate for each sample the mirror elevation and heading
+    logging.info("Register es")
     register_by_name(elevations(), 'es')
+    logging.info("Register hs")
     register_by_name(headings(), 'hs')
     # initialize interpolcation functions
+    logging.info("Generate elevation interpolator")
     elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    logging.info("Generate heading interpolator")
     heading = LinearNDInterpolator(cal['vs'], cal['hs'])
 
     logging.info("Finish magnetometer calibration")
@@ -535,33 +566,36 @@ def calibrate():
 def save_calibration():
     global cal
     logging.info("Writing data to file")
-    np.savetext('ss.csv', cal['ss'])
-    np.savetext('ts.csv', cal['ts'])
-    np.savetext('vs.csv', cal['vs'])
-    np.savetext('ns.csv', cal['ns'])
-    np.savetext('es.csv', cal['es'])
-    np.savetext('hs.csv', cal['hs'])
+    np.savetxt('ss.csv', cal['ss'])
+    np.savetxt('ts.csv', cal['ts'])
+    np.savetxt('vs.csv', cal['vs'])
+    np.savetxt('ns.csv', cal['ns'])
+    np.savetxt('es.csv', cal['es'])
+    np.savetxt('hs.csv', cal['hs'])
 
 
 def load_calibration():
     global cal
     global elevation  # function
     global heading  # function
-    cal['ss'] = np.loadtext('ss.csv')
-    cal['ts'] = np.loadtext('ts.csv')
-    cal['vs'] = np.loadtext('vs.csv')
-    cal['ns'] = np.loadtext('ns.csv')
-    cal['es'] = np.loadtext('es.csv')
-    cal['hs'] = np.loadtext('hs.csv')
+    cal = {}
+    cal['ss'] = np.loadtxt('ss.csv')
+    cal['ts'] = np.loadtxt('ts.csv')
+    cal['vs'] = np.loadtxt('vs.csv')
+    cal['ns'] = np.loadtxt('ns.csv')
+    cal['es'] = np.loadtxt('es.csv')
+    cal['hs'] = np.loadtxt('hs.csv')
     # initialize interpolcation functions
+    logging.info("Generate elevation interpolator")
     elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    logging.info("Generate heading interpolator")
     heading = LinearNDInterpolator(cal['vs'], cal['hs'])
 
 
 def projection_on_vector(v1, v2):
     ''' Returns vector projection of v1 on v2
     '''
-    return (np.dot(v1, v2) / np.dot(v2, v2)) * v2
+    return (np.dot(v1, v2) / np.dot(v2, v2)) * np.array(v2)
 
 
 def projection_on_plane(v1, n):
@@ -575,7 +609,15 @@ def angle_between_vectors(v1, v2):
     '''
     v1_unit = v1 / np.linalg.norm(v1)
     v2_unit = v2 / np.linalg.norm(v2)
-    return np.arccos(np.dot(v1_unit, v2_unit))
+    cos = np.dot(v1_unit, v2_unit)  # in edge cases this can be like 1.00000000002
+    if cos > 1: 
+        logging.info(f"Dot product or normalized vectors gave invalid cos of {cos}, making it 1")
+        cos = 1
+    if cos < -1: 
+        logging.info(f"Dot product or normalized vectors gave invalid cos of {cos}, making it -1")
+        cos = -1
+    angle = np.arccos(cos)
+    return angle
 
 
 def angle_between_vector_and_plane(v, n):
@@ -631,8 +673,9 @@ def plot(data=None, title=None, final=False):
     plot_data = data
     plot_title = title
     plot_final = final
-    handler_lock.release()
-    generator_lock.acquire()
+    if __name__.startswith('bokeh'):
+        handler_lock.release()
+        generator_lock.acquire()
 
 # THIS RUNS IN A THREAD!
 def menu():
