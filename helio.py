@@ -39,12 +39,13 @@ logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%
 # force=True is needed because bokeh sets the level down
 
 # Setup motors
-MOTOR_TRAVEL_TIME = 30  # 30 seconds, 10 for speeding up durig debugging
+MOTOR_TRAVEL_TIME = 25  # 25 seconds, 10 for speeding up durig debugging
 MOTOR_S = Motor(26, 20)
 MOTOR_T = Motor(19, 16)
 
 # Setup calibration data global variable
-NUMBER_OF_SCANS = 1
+NUMBER_OF_PARTIAL_SWIPES = 5
+DOWNSAMPLING = 20  # 4000 samples => 20 samples
 
 
 class Gyroscope(object):
@@ -113,6 +114,16 @@ class Magnetometer(object):
                 The reading in uT (not corrected).
         '''
         return np.array(self.sensor.read())
+
+    def read_10(self):
+        ''' Get 10 samples and take average.
+
+            Returns
+            -------
+            s : np.array
+                The reading in uT (not corrected).
+        '''
+        return np.array(self.sensor.read(number_of_readouts=10))
 
 
 class FXAS21002c(object):
@@ -228,12 +239,13 @@ def scan(duration=MOTOR_TRAVEL_TIME):
 def find_tail(xs, threshold):
     minimum = np.min(xs)
     maximum = np.max(xs)
-    if threshold > 1/100 * (maximum - minimum): 
+    if maximum - minimum < 300 * threshold:
         logging.warning(f"Tail finding with threshold {threshold} in data with range {maximum - minimum} doesn't make sense")
         return 0
     else:
     # starting from the end, find the first value where change > threshold
-        i = len(xs) - 1
+        length = len(xs) - 1
+        i = length
         x = xs[i]
         running_min = x
         running_max = x
@@ -247,7 +259,7 @@ def find_tail(xs, threshold):
                 running_min = min(running_min, x)
                 running_max = max(running_max, x)
         index = i + 1
-        logging.info(f"Tail found at index {i} based on threshold {threshold} in data with range {maximum - minimum}")
+        logging.info(f"Tail found at index {i} ({int(i/length*100)}%) based on threshold {threshold} in data with range {maximum - minimum}")
         return index
 
 def trim_tail(vs):
@@ -266,9 +278,10 @@ def trim_tail(vs):
     azs = scipy.ndimage.uniform_filter1d(vs[:,5], 500)
     logging.info("Finding tails for resp. ax, ay, az")
     length = len(axs)
-    plot(data={'x': np.arange(length), 'y': axs}, title="axs")
-    plot(data={'x': np.arange(length), 'y': ays}, title="ays")
-    plot(data={'x': np.arange(length), 'y': azs}, title="azs")
+    plot(data={'x': np.hstack((np.arange(length),np.arange(length),np.arange(length))), 'y': np.hstack((axs,ays,azs))}, title="as")
+    #plot(data={'x': np.arange(length), 'y': axs}, title="axs")
+    #plot(data={'x': np.arange(length), 'y': ays}, title="ays")
+    #plot(data={'x': np.arange(length), 'y': azs}, title="azs")
     tails = []
     tails.append(find_tail(axs, a_threshold))
     tails.append(find_tail(ays, a_threshold))
@@ -290,9 +303,10 @@ def normalized_offset_to_hinge_angle_function():
     q1 = 37.90
     q2 = 11.98
     ang = np.linspace(0.001,np.pi/2,90)
-    off = np.sqrt((1/np.tan(ang/2)+q1)**2 + (1/np.tan(ang/2)+q2)**2 - 2*(1/np.tan(ang/2)+q1)*(1/np.tan(ang/2)+q2)*np.cos(ang))
+    off = (np.sqrt((1/np.tan(ang/2)+q1)**2 + (1/np.tan(ang/2)+q2)**2 - 2*(1/np.tan(ang/2)+q1)*(1/np.tan(ang/2)+q2)*np.cos(ang)) - 26) / 15  # 15 is the movement range of the motor in cm, 26 is the minimum length
     ang = np.hstack((0,ang))
     off = np.hstack((0,off))
+    #import pdb; pdb.set_trace()
     return interpolate.interp1d(off, ang)
 
 def downsample_columns(vs, new_nrows):
@@ -310,9 +324,10 @@ def downsample_array(a, new_n):
     new_a = interpolation(np.linspace(0, n-1, new_n))
     return new_a
 
-def process_swipe(times, vs, forward=True):
+def process_swipe(times, vs, special_idx, forward=True):
     # trim the readouts to where the movement stops (= 90 degrees)
     # and convert times to angles
+    # special_idx is a list of indices, for which a list of corresponding angles is returned (only forward?)
     normalized_offset_to_hinge_angle = normalized_offset_to_hinge_angle_function()
     timeindexmax, vs = trim_tail(vs) 
     times = times[0:timeindexmax]
@@ -322,11 +337,19 @@ def process_swipe(times, vs, forward=True):
         times = np.flip(times)
         vs = np.flip(vs, 0)
     angs = normalized_offset_to_hinge_angle(times/timemax)
+    # special angles
+    if special_idx:
+        special_angles = [normalized_offset_to_hinge_angle(times[i]/timemax) for i in special_idx if i < timeindexmax]
+    else:
+        special_angles = None
     # downsample
-    number_of_samples = int(len(angs) / 40)  # a complete swipe delivers ~4000 raw samples, downsample to ~100 
+    number_of_samples = DOWNSAMPLING
     vs = downsample_columns(vs, number_of_samples)
     angs = downsample_array(angs, number_of_samples)
-    return angs, vs
+    if special_idx:
+        return angs, vs, special_angles
+    else:
+        return angs, vs
     
 def swipe(forward=None, MOTOR=None, motorname=None):
     logging.info(f"Start fully {'extending' if forward else 'retracting'} {motorname} motor")
@@ -443,8 +466,8 @@ def calibrate():
 
     cal = {}  # reset global variable containing the calibration values
 
-    if NUMBER_OF_SCANS > 1:
-        partial_motor_travel_time = MOTOR_TRAVEL_TIME / (NUMBER_OF_SCANS - 1)
+    if NUMBER_OF_PARTIAL_SWIPES > 1:
+        partial_motor_travel_time = MOTOR_TRAVEL_TIME / NUMBER_OF_PARTIAL_SWIPES
     else:
         partial_motor_travel_time = MOTOR_TRAVEL_TIME
 
@@ -455,76 +478,83 @@ def calibrate():
     # calculate the tilt angle of the whole heliostat
     level, helio_tilt = read_level()
     if level > np.pi/20:
-        logging.warning(f"The heliostat isn't mounted level, it's {level} rad off.")
-    logging.info(f"The heliostat is mounted with a tilt of {helio_tilt} rad.")
+        logging.warning(f"The heliostat isn't mounted level, it's {np.degrees(level)} degrees off.")
+    logging.info(f"The heliostat is mounted with a tilt of {np.degrees(helio_tilt)} degrees.")
 
     # sequence of forward partial swivel swipes with 0 tilt angle 
 
-    for i in range(NUMBER_OF_SCANS):
+    for i in range(NUMBER_OF_PARTIAL_SWIPES):
+        logging.info(f"Forward partial swivel swipe #{i} with 0 tilt angle")
+        if i > 0: time.sleep(2)
         partial_times, partial_vs = partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_S, motorname="swivel")
         if i == 0:
             times = partial_times
             vs = partial_vs
             swipe_idxs = [len(times) - 1]  # list of indices of end times for each partial swipe
         else:
-            times = np.hstack((times, partial_times + swipe_times[-1]))  # starting from end time in previous partial swipe
+            times = np.hstack((times, partial_times + times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
-            swipe_idxs.append(swipe_idxs[-1] + len(times))  
-        ss, vs = process_swipe(times, vs, forward=True)
-        register(ss, np.full((1, len(ss)), 0)[0], vs)  # ts are all zero, full returns [[]], so I need [0]
-        # make a list of the swivel angles for constant swivel angle
-        s_angles = [ss[i] for i in swipe_idxs if i < len(ss)]  # the number angles may be lower than NUMBER_OF_SCANS
+            swipe_idxs.append(len(times))  
+    ss, vs, s_angles = process_swipe(times, vs, swipe_idxs, forward=True)
+    register(ss, np.full((1, len(ss)), 0)[0], vs)  # ts are all zero, full returns [[]], so I need [0]
+    logging.info(f"Swipe angles are {np.degrees(s_angles)} based on indices {swipe_idxs}")
 
     # sequence of forward partial tilt swipes with 90 swivel angle 
 
-    for i in range(NUMBER_OF_SCANS):
+    for i in range(NUMBER_OF_PARTIAL_SWIPES):
+        logging.info(f"Forward partial tilt swipe #{i} with 90 swivel angle")
+        if i > 0: time.sleep(2)
         partial_times, partial_vs = partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_T, motorname="tilt")
         if i == 0:
             times = partial_times
             vs = partial_vs
             swipe_idxs = [len(times) - 1]  # list of indices of end times for each partial swipe
         else:
-            times = np.hstack((times, partial_times + swipe_times[-1]))  # starting from end time in previous partial swipe
+            times = np.hstack((times, partial_times + times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
-            swipe_idxs.append(swipe_idxs[-1] + len(times))  
-        ts, vs = process_swipe(times, vs, forward=True)
-        register(np.full((1, len(ts)), np.pi/2)[0], ts, vs)  # ss are all 90 degrees
-        # make a list of the tilt angles for constant tilt angle
-        t_angles = [ts[i] for i in swipe_idxs if i < len(ss)]  # the number angles may be lower than NUMBER_OF_SCANS
+            swipe_idxs.append(len(times))  
+    ts, vs, t_angles = process_swipe(times, vs, swipe_idxs, forward=True)
+    register(np.full((1, len(ts)), np.pi/2)[0], ts, vs)  # ss are all 90 degrees
+    logging.info(f"Tilt angles are {np.degrees(s_angles)} based on indices {swipe_idxs}")
 
     # sequence of backward partial swivel swipes with 90 tilt angle 
 
-    for i in range(NUMBER_OF_SCANS):
+    for i in range(NUMBER_OF_PARTIAL_SWIPES):
+        logging.info(f"Backward partial swivel swipe #{i} with 90 tilt angle")
         partial_times, partial_vs = partial_swipe(duration=partial_motor_travel_time, forward=False, MOTOR=MOTOR_S, motorname="swivel")
         if i == 0:
             times = partial_times
             vs = partial_vs
         else:
-            times = np.hstack((times, partial_times + swipe_times[-1]))  # starting from end time in previous partial swipe
+            time.sleep(1)
+            times = np.hstack((times, partial_times + times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
-        ss, vs = process_swipe(times, vs, forward=False)
-        register(ss, np.full((1, len(ss)), np.pi/2)[0], vs)  # ts are all 90 degrees
+    ss, vs = process_swipe(times, vs, None, forward=False)
+    register(ss, np.full((1, len(ss)), np.pi/2)[0], vs)  # ts are all 90 degrees
 
     # sequence of backward partial tilt swipes with 0 swivel angle 
 
-    for i in range(NUMBER_OF_SCANS):
+    for i in range(NUMBER_OF_PARTIAL_SWIPES):
+        logging.info(f"Backward partial tilt swipe #{i} with 0 swivel angle")
         partial_times, partial_vs = partial_swipe(duration=partial_motor_travel_time, forward=False, MOTOR=MOTOR_T, motorname="tilt")
         if i == 0:
             times = partial_times
             vs = partial_vs
         else:
-            times = np.hstack((times, partial_times + swipe_times[-1]))  # starting from end time in previous partial swipe
+            time.sleep(1)
+            times = np.hstack((times, partial_times + times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
-        ts, vs = process_swipe(times, vs, forward=True)
-        register(np.full((1, len(ts)), 0)[0], ts, vs)  # ss are all 0
+    ts, vs = process_swipe(times, vs, None, forward=True)
+    register(np.full((1, len(ts)), 0)[0], ts, vs)  # ss are all 0
 
     # swipes with constant tilt angle
 
     forward = True
     for t in t_angles:  # skipping the first scan at 0 degrees
+        logging.info(f"Swivel swipe with {np.degrees(t)} tilt angle")
         partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_T, motorname="tilt")
         times, vs = swipe(forward=forward, MOTOR=MOTOR_S, motorname="swivel")
-        ss, vs = process_swipe(times, vs, forward=forward)
+        ss, vs = process_swipe(times, vs, None, forward=forward)
         register(ss, np.full((1, len(ss)), t)[0], vs)  # ts are all t (from t_angles)
         forward = not forward  # reverse direction for next iteration
     if not forward:  # last swipe was forward
@@ -535,9 +565,10 @@ def calibrate():
 
     forward = True
     for s in s_angles:
+        logging.info(f"Tilt swipe with {np.degrees(s)} swivel angle")
         partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_S, motorname="swivel")
         times, vs = swipe(forward=forward, MOTOR=MOTOR_T, motorname="tilt")
-        ts, vs = process_swipe(times, vs, forward=forward)
+        ts, vs = process_swipe(times, vs, None, forward=forward)
         register(np.full((1, len(ts)), s)[0], ts, vs)  # ss are all s (from s_angles)
         forward = not forward  # reverse direction for next iteration
     if not forward:  # last swipe was forward
@@ -592,6 +623,75 @@ def load_calibration():
     heading = LinearNDInterpolator(cal['vs'], cal['hs'])
 
 
+def read_elevation_and_heading():
+    global elevation  # function
+    global heading  # function
+    global magnetometer, accelerometer
+    m = magnetometer.read_10()  # averaged sample in uT as np.array
+    a = accelerometer.read_ms2()  # sample as np.array
+    e = elevation(m[0], m[1], m[2], a[0], a[1], a[2])
+    h = heading(m[0], m[1], m[2], a[0], a[1], a[2])
+    return e,h
+
+
+def move_and_report():
+    global reporting
+
+    def count(start):
+        global reporting
+        while reporting:
+            e, h = read_elevation_and_heading()
+            #print("elevation: {:4.1f} - heading: {:4.1f}".format(np.degrees(e), np.degrees(h)), end="\r")
+            print("elevation: {:4.1f} - heading: {:4.1f}".format(np.degrees(e), np.degrees(h)))
+            time.sleep(0.1)
+
+    def start_moving(direction):
+        if direction == 'l':
+            print("start moving left")
+            MOTOR_S.backward()
+        elif direction == 'k':
+            print("start moving down")
+            MOTOR_T.backward()
+        elif direction == 'j':
+            print("start moving up")
+            MOTOR_T.forward()
+        elif direction == 'h':
+            print("start moving right")
+            MOTOR_S.forward()
+
+    reporting = True
+    c = threading.Thread(target=count, args=(1,))
+    c.start()
+
+    moving = False
+    direction = 'k'  # default direction up
+    print("Press hjkl for direction and <enter> for stop/restart: ")
+    while True:
+        char = input("? ")
+        if not char and moving:
+            print("stop motors")
+            MOTOR_S.stop()
+            MOTOR_T.stop()
+            moving = False
+        elif not char and not moving:
+            # continue previous direction
+            moving = True
+            start_moving(direction)
+        elif char[0] in "hjkl":
+            if moving and not char[0] == direction:
+                print("stop motors")
+                MOTOR_S.stop()
+                MOTOR_T.stop()
+            direction = char[0]
+            moving = True
+            start_moving(direction)
+        elif char[0] == 'q':
+            break
+
+    reporting = False
+    c.join()
+
+
 def projection_on_vector(v1, v2):
     ''' Returns vector projection of v1 on v2
     '''
@@ -627,44 +727,6 @@ def angle_between_vector_and_plane(v, n):
     return angle_between_vectors(v, vp)
 
 
-def track_inclination_and_heading():
-    global accelerometer, magnetometer
-    try:
-        while True:
-            a = accelerometer.read()
-            m = magnetometer.read_cal()
-            vertical = np.array([-1,0,0])  # X-axis is vertical pointing up when collapsed; depends on how the sensor is mounted!
-            # elevation is the angle between a and vertical
-            elevation = np.degrees(angle_between_vectors(a, vertical))
-            # normal vector of the mirror
-            mirror_normal = np.array([0,1,0])  # Y-axis is perpendicular to the mirror; depends on how the sensor is mounted!
-            # projection of the Y-axis on the horizontal plane
-            y_horizontal = projection_on_plane(mirror_normal, a)
-            # projection of the magnetic vector on the horizontal plane
-            m_horizontal = projection_on_plane(m, a)
-            # heading is angle between these two projected vectors in the horizontal plane
-            heading = np.degrees(angle_between_vectors(y_horizontal, m_horizontal))
-            # magnetic inclincation is the angle between m and m_horizontal
-            magnetic_inclination = np.degrees(angle_between_vectors(m, m_horizontal))
-            print("elevation: {:4.1f} - heading: {:4.1f} - magnetic inclination: {:4.1f}".format(elevation, heading, magnetic_inclination), end="\r")
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        pass
-
-
-def track_magnetic():
-    global magnetometer
-    try:
-        while True:
-            m = magnetometer.read_cal()
-            xy = np.array([0, 0, 1])  # normal vector of XY plane
-            i = angle_between_vector_and_plane(m, xy)
-            xz = np.array([0, 1, 0])  # normal vector of XZ plane
-            h = angle_between_vector_and_plane(m, xz)
-            a = np.linalg.norm(m)
-            print("x,y,z: {:4.1f},{:4.1f},{:4.1f} - inclination (vs XY): {:4.1f} - heading (vs XZ): {:4.1f} - strength: {:8.1f}".format(m[0], m[1], m[2], np.degrees(i), np.degrees(h), a), end="\r")
-    except KeyboardInterrupt:
-        pass
 
 def plot(data=None, title=None, final=False):
     global plot_data
@@ -684,8 +746,7 @@ def menu():
         ['Calibrate', calibrate],
         ['Save calibration to file', save_calibration],
         ['Load calibration from file', load_calibration],
-        ['Track inclination and heading angles', track_inclination_and_heading],
-        ['Track magnetic sensor', track_magnetic],
+        ['Move using keyboard and report position', move_and_report],
         ['Retract motors', retract_motors],
         ['Quit', sys.exit]
     ]
