@@ -390,7 +390,7 @@ def retract_motors():
 def register(ss, ts, vs):
     global cal
     logging.info(f"Registering {len(ss)} samples")
-    if not cal:
+    if 'ss' not in cal:
         cal['ss'] = ss
         cal['ts'] = ts
         cal['vs'] = vs
@@ -620,7 +620,7 @@ def save_calibration():
     np.savetxt('ns.csv', cal['ns'])
     np.savetxt('es.csv', cal['es'])
     np.savetxt('hs.csv', cal['hs'])
-    np.savetxt('pos.csv', np.array([cal['level'], cal['helio_tilt']])
+    np.savetxt('pos.csv', np.array([cal['level'], cal['helio_tilt']]))
 
 
 def load_calibration():
