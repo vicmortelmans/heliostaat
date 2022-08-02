@@ -217,6 +217,15 @@ def read_level():
     helio_tilt = angle_between_vector_and_plane(a, np.array([0,1,0]))
     return level, helio_tilt
 
+def read_level_from_vs():
+    global cal
+    a = cal['vs'][0, [3,4,5]]
+    # level is angle between gravity vector and YZ plane
+    level = angle_between_vector_and_plane(a, np.array([1,0,0]))
+    # helio_tilt is angle between gravity vector and XZ plane
+    helio_tilt = angle_between_vector_and_plane(a, np.array([0,1,0]))
+    return level, helio_tilt
+
 def scan(duration=MOTOR_TRAVEL_TIME):
     # read sensor values for specified duration and return them with timestamps
     global magnetometer, accelerometer
@@ -390,20 +399,26 @@ def register(ss, ts, vs):
         cal['ts'] = np.hstack((cal['ts'], ts))
         cal['vs'] = np.vstack((cal['vs'], vs))
 
+def register_position(level, helio_tilt):
+    global cal
+    cal['level'] = level
+    cal['helio_tilt'] = helio_tilt
+
+
 def register_by_name(array, name):
     global cal
     logging.info(f"Registering {len(array)} samples as {name}")
     cal[name] = array
 
-def normal_vectors(helio_tilt):
+def normal_vectors():
     global cal
-    ht = helio_tilt  # readibility
+    ht = cal['helio_tilt']  # readibility
     for i in range(len(cal['vs'])):
         s = cal['ss'][i]
         t = cal['ts'][i]
-        x = -np.sin(s)*np.cos(ht)
+        x = -np.sin(s)*np.cos(t)
         y = np.cos(t)*np.cos(s)*np.cos(ht) - np.sin(t)*np.sin(ht)
-        z = np.sin(t)*np.sin(s)*np.cos(ht) + np.cos(t)*np.sin(ht)
+        z = np.cos(t)*np.cos(s)*np.sin(ht) + np.sin(t)*np.cos(ht)
         if i == 0:
             ns = np.array([x, y, z])
         else:
@@ -460,7 +475,6 @@ def data_handler():
 
 def calibrate():
     global cal
-    global interpol
     global elevation  # function
     global heading  # function
 
@@ -477,6 +491,7 @@ def calibrate():
 
     # calculate the tilt angle of the whole heliostat
     level, helio_tilt = read_level()
+    register_position(level, helio_tilt)
     if level > np.pi/20:
         logging.warning(f"The heliostat isn't mounted level, it's {np.degrees(level)} degrees off.")
     logging.info(f"The heliostat is mounted with a tilt of {np.degrees(helio_tilt)} degrees.")
@@ -578,19 +593,21 @@ def calibrate():
     # calculate for each sample the absolute normal vector of the mirror
     # (in coordinate system with vertical Z, thus including the effect of the helio tilt)
     logging.info("Register ns")
-    register_by_name(normal_vectors(helio_tilt), 'ns')
+    register_by_name(normal_vectors(), 'ns')
     # calculate for each sample the mirror elevation and heading
     logging.info("Register es")
     register_by_name(elevations(), 'es')
     logging.info("Register hs")
     register_by_name(headings(), 'hs')
+
     # initialize interpolcation functions
     logging.info("Generate elevation interpolator")
-    elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    elevation = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['es'])  # mx, ax, ay
     logging.info("Generate heading interpolator")
-    heading = LinearNDInterpolator(cal['vs'], cal['hs'])
+    #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
+    heading = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['hs'])  # mx, ax, ay
 
-    logging.info("Finish magnetometer calibration")
     logging.info("Finished heliostat position calibration")
 
 
@@ -603,6 +620,7 @@ def save_calibration():
     np.savetxt('ns.csv', cal['ns'])
     np.savetxt('es.csv', cal['es'])
     np.savetxt('hs.csv', cal['hs'])
+    np.savetxt('pos.csv', np.array([cal['level'], cal['helio_tilt']])
 
 
 def load_calibration():
@@ -616,11 +634,14 @@ def load_calibration():
     cal['ns'] = np.loadtxt('ns.csv')
     cal['es'] = np.loadtxt('es.csv')
     cal['hs'] = np.loadtxt('hs.csv')
+    cal['level'], cal['helio_tilt'] = np.loadtxt('pos.csv')
     # initialize interpolcation functions
     logging.info("Generate elevation interpolator")
-    elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
+    elevation = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['es'])  # mx, ax, ay
     logging.info("Generate heading interpolator")
-    heading = LinearNDInterpolator(cal['vs'], cal['hs'])
+    #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
+    heading = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['hs'])  # mx, ax, ay
 
 
 def read_elevation_and_heading():
@@ -629,8 +650,10 @@ def read_elevation_and_heading():
     global magnetometer, accelerometer
     m = magnetometer.read_10()  # averaged sample in uT as np.array
     a = accelerometer.read_ms2()  # sample as np.array
-    e = elevation(m[0], m[1], m[2], a[0], a[1], a[2])
-    h = heading(m[0], m[1], m[2], a[0], a[1], a[2])
+    #e = elevation(m[0], m[1], m[2], a[0], a[1], a[2])
+    #h = heading(m[0], m[1], m[2], a[0], a[1], a[2])
+    e = elevation(m[0], a[0], a[1])  # mx, ax, ay
+    h = heading(m[0], a[0], a[1])  # mx, ax, ay
     return e,h
 
 
