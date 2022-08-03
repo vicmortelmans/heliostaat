@@ -40,6 +40,33 @@ def brute_force():
         if not math.isnan(e):
             print(f"mx: {mx}, my: {my}, mz: {mz}, ax: {ax}, ay: {ay}, az: {az}, e: {e}") 
 
+def export_miabellaai():
+    cal = {}
+    cal['vs'] = np.loadtxt('vs.csv')
+    cal['es'] = np.loadtxt('es.csv')
+    elevation = load_calibration()
+
+    X = cal['vs'][:,0]
+    Y = cal['vs'][:,3]
+    Z = cal['vs'][:,4]
+    C = cal['es']
+
+    
+    Xm = np.arange(-50, 40, 2.5)
+    Ym = np.arange(-4, 1, 0.25)
+    Zm = np.arange(-10, 4, 0.25)
+
+    with open('miabellaai.txt', 'w') as f:
+        f.write("helio;\n")
+        for i, s in enumerate(X):
+            f.write(f"#R{i}::{X[i]}::{Y[i]}::{Z[i]}::{C[i]}::4::A::1::0::0::0::0;\n")
+        for xs in Xm:
+            for ys in Ym:
+                for zs in Zm:
+                    e = elevation(xs, ys, zs)
+                    if not math.isnan(e):
+                        f.write(f"#R{xs}/{ys}/{zs}::{xs}::{ys}::{zs}::{e}::1::B::1::0::0::0::0;\n")
+
 def plot():
     cal = {}
     cal['vs'] = np.loadtxt('vs.csv')

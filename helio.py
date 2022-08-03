@@ -24,7 +24,7 @@ import logging
 import numpy as np
 import random
 from scipy import linalg, signal, interpolate
-from scipy.interpolate import LinearNDInterpolator
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 import scipy.ndimage
 import sys
 import threading
@@ -115,7 +115,7 @@ class Magnetometer(object):
         '''
         return np.array(self.sensor.read())
 
-    def read_10(self):
+    def read_average(self, number_of_readouts):
         ''' Get 10 samples and take average.
 
             Returns
@@ -123,7 +123,7 @@ class Magnetometer(object):
             s : np.array
                 The reading in uT (not corrected).
         '''
-        return np.array(self.sensor.read(number_of_readouts=10))
+        return np.array(self.sensor.read(number_of_readouts=number_of_readouts))
 
 
 class FXAS21002c(object):
@@ -178,6 +178,8 @@ class FXOS8700_ms(object):
             xs += x
             ys += y
             zs += z
+            if number_of_readouts > 1:
+                time.sleep(0.001)
         xm = xs / number_of_readouts
         ym = ys / number_of_readouts
         zm = zs / number_of_readouts
@@ -603,10 +605,10 @@ def calibrate():
     # initialize interpolcation functions
     logging.info("Generate elevation interpolator")
     #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
-    elevation = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['es'])  # mx, ax, ay
+    #elevation = LinearNDInterpolator(cal['vs'][:,[2,3,4]], cal['es'])  # REERENCE mz, ax, ay
     logging.info("Generate heading interpolator")
     #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
-    heading = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['hs'])  # mx, ax, ay
+    heading = LinearNDInterpolator(cal['vs'][:,[2,3,4]], cal['hs'])  # REERENCE mz, ax, ay
 
     logging.info("Finished heliostat position calibration")
 
@@ -638,23 +640,23 @@ def load_calibration():
     # initialize interpolcation functions
     logging.info("Generate elevation interpolator")
     #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
-    elevation = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['es'])  # mx, ax, ay
+    elevation = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['es'])  # REFERENCE mx, ax, ay
     logging.info("Generate heading interpolator")
     #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
-    heading = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['hs'])  # mx, ax, ay
+    heading = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['hs'])  # REFERENCE mx, ax, ay
 
 
 def read_elevation_and_heading():
     global elevation  # function
     global heading  # function
     global magnetometer, accelerometer
-    m = magnetometer.read_10()  # averaged sample in uT as np.array
+    m = magnetometer.read_average(80)  # averaged sample in uT as np.array
     a = accelerometer.read_ms2()  # sample as np.array
     #e = elevation(m[0], m[1], m[2], a[0], a[1], a[2])
     #h = heading(m[0], m[1], m[2], a[0], a[1], a[2])
-    e = elevation(m[0], a[0], a[1])  # mx, ax, ay
-    h = heading(m[0], a[0], a[1])  # mx, ax, ay
-    return e,h
+    e = elevation(m[0], a[0], a[1])  # REFERENCE mx, ax, ay
+    h = heading(m[0], a[0], a[1])  # REFERENCE mx, ax, ay
+    return m,a,e,h
 
 
 def move_and_report():
@@ -663,23 +665,24 @@ def move_and_report():
     def count(start):
         global reporting
         while reporting:
-            e, h = read_elevation_and_heading()
+            m, a, e, h = read_elevation_and_heading()
             #print("elevation: {:4.1f} - heading: {:4.1f}".format(np.degrees(e), np.degrees(h)), end="\r")
-            print("elevation: {:4.1f} - heading: {:4.1f}".format(np.degrees(e), np.degrees(h)))
+            # REFERENCE mx, ax, ay
+            print("mx: {:4.1f} - ax: {:4.1f} - ay: {:4.1f} - elevation: {:4.1f} - heading: {:4.1f}".format(m[0], a[0], a[1], np.degrees(e), np.degrees(h)))
             time.sleep(0.1)
 
     def start_moving(direction):
         if direction == 'l':
-            print("start moving left")
+            print("start moving right")
             MOTOR_S.backward()
         elif direction == 'k':
-            print("start moving down")
+            print("start moving up")
             MOTOR_T.backward()
         elif direction == 'j':
-            print("start moving up")
+            print("start moving down")
             MOTOR_T.forward()
         elif direction == 'h':
-            print("start moving right")
+            print("start moving left")
             MOTOR_S.forward()
 
     reporting = True
