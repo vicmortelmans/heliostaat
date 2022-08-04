@@ -58,6 +58,7 @@ def export_miabellaai():
 
     with open('miabellaai.txt', 'w') as f:
         f.write("helio;\n")
+        f.write("::mx::ax::ay;\n")
         for i, s in enumerate(X):
             f.write(f"#R{i}::{X[i]}::{Y[i]}::{Z[i]}::{C[i]}::4::A::1::0::0::0::0;\n")
         for xs in Xm:

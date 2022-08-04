@@ -344,9 +344,9 @@ def process_swipe(times, vs, special_idx, forward=True):
     times = times[0:timeindexmax]
     timemax = times[-1]  # last element = times[timeindexmax-1]
     if not forward:
-        # swiping backward, so flipping order of samples, because offset_to_hinge function is direction-dependent!
+        logging.info("swiping backward, so flipping order of timestamps, because offset_to_hinge function is direction-dependent and fist v should map to 90 degrees and last v to zero degrees!")
         times = np.flip(times)
-        vs = np.flip(vs, 0)
+        #vs = np.flip(vs, 0)
     angs = normalized_offset_to_hinge_angle(times/timemax)
     # special angles
     if special_idx:
@@ -498,7 +498,7 @@ def calibrate():
         logging.warning(f"The heliostat isn't mounted level, it's {np.degrees(level)} degrees off.")
     logging.info(f"The heliostat is mounted with a tilt of {np.degrees(helio_tilt)} degrees.")
 
-    # sequence of forward partial swivel swipes with 0 tilt angle 
+    # sequence of forward partial swivel swipes with 0 tilt angle #0-19
 
     for i in range(NUMBER_OF_PARTIAL_SWIPES):
         logging.info(f"Forward partial swivel swipe #{i} with 0 tilt angle")
@@ -516,7 +516,7 @@ def calibrate():
     register(ss, np.full((1, len(ss)), 0)[0], vs)  # ts are all zero, full returns [[]], so I need [0]
     logging.info(f"Swipe angles are {np.degrees(s_angles)} based on indices {swipe_idxs}")
 
-    # sequence of forward partial tilt swipes with 90 swivel angle 
+    # sequence of forward partial tilt swipes with 90 swivel angle #20-39
 
     for i in range(NUMBER_OF_PARTIAL_SWIPES):
         logging.info(f"Forward partial tilt swipe #{i} with 90 swivel angle")
@@ -532,9 +532,9 @@ def calibrate():
             swipe_idxs.append(len(times))  
     ts, vs, t_angles = process_swipe(times, vs, swipe_idxs, forward=True)
     register(np.full((1, len(ts)), np.pi/2)[0], ts, vs)  # ss are all 90 degrees
-    logging.info(f"Tilt angles are {np.degrees(s_angles)} based on indices {swipe_idxs}")
+    logging.info(f"Tilt angles are {np.degrees(t_angles)} based on indices {swipe_idxs}")
 
-    # sequence of backward partial swivel swipes with 90 tilt angle 
+    # sequence of backward partial swivel swipes with 90 tilt angle #40-59
 
     for i in range(NUMBER_OF_PARTIAL_SWIPES):
         logging.info(f"Backward partial swivel swipe #{i} with 90 tilt angle")
@@ -549,7 +549,7 @@ def calibrate():
     ss, vs = process_swipe(times, vs, None, forward=False)
     register(ss, np.full((1, len(ss)), np.pi/2)[0], vs)  # ts are all 90 degrees
 
-    # sequence of backward partial tilt swipes with 0 swivel angle 
+    # sequence of backward partial tilt swipes with 0 swivel angle #60-79
 
     for i in range(NUMBER_OF_PARTIAL_SWIPES):
         logging.info(f"Backward partial tilt swipe #{i} with 0 swivel angle")
@@ -561,10 +561,10 @@ def calibrate():
             time.sleep(1)
             times = np.hstack((times, partial_times + times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
-    ts, vs = process_swipe(times, vs, None, forward=True)
+    ts, vs = process_swipe(times, vs, None, forward=False)
     register(np.full((1, len(ts)), 0)[0], ts, vs)  # ss are all 0
 
-    # swipes with constant tilt angle
+    # swipes with constant tilt angle #80-99, 100-119, 120-139, 140-159
 
     forward = True
     for t in t_angles:  # skipping the first scan at 0 degrees
@@ -578,7 +578,7 @@ def calibrate():
         retract(MOTOR=MOTOR_S, motorname="swivel")
     retract(MOTOR=MOTOR_T, motorname="tilt")
 
-    # swipes with constant swivel angle
+    # swipes with constant swivel angle #160-179, 180-199, 200-219, 220-239
 
     forward = True
     for s in s_angles:
