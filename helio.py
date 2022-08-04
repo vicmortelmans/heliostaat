@@ -31,6 +31,17 @@ import threading
 import time
 import vg
 
+'''
+ribs data structure:
+[
+    {
+        'direction': 'swivel' or 'tilt',  # 'swivel' means: constant tilt angle, and vv.
+        'start': start index in cal['vs'] and derived arrays
+        'length': number of entries in cal['vs'] and derived arrays
+    }
+]
+'''
+
 handler_lock = threading.Semaphore(0)  # handler waiting for data
 generator_lock = threading.Semaphore(0)  # generator waiting for user pushing the button
 
@@ -219,15 +230,6 @@ def read_level():
     helio_tilt = angle_between_vector_and_plane(a, np.array([0,1,0]))
     return level, helio_tilt
 
-def read_level_from_vs():
-    global cal
-    a = cal['vs'][0, [3,4,5]]
-    # level is angle between gravity vector and YZ plane
-    level = angle_between_vector_and_plane(a, np.array([1,0,0]))
-    # helio_tilt is angle between gravity vector and XZ plane
-    helio_tilt = angle_between_vector_and_plane(a, np.array([0,1,0]))
-    return level, helio_tilt
-
 def scan(duration=MOTOR_TRAVEL_TIME):
     # read sensor values for specified duration and return them with timestamps
     global magnetometer, accelerometer
@@ -389,14 +391,25 @@ def retract_motors():
     retract(MOTOR=MOTOR_S, motorname="sweep")
     retract(MOTOR=MOTOR_T, motorname="tilt")
 
-def register(ss, ts, vs):
+def register(ss, ts, vs, motorname):
     global cal
     logging.info(f"Registering {len(ss)} samples")
     if 'ss' not in cal:
+        # first entry
+        cal['ribs'] = [{
+            'motorname': motorname,
+            'start': 0,
+            'length': len(ss)
+        }]
         cal['ss'] = ss
         cal['ts'] = ts
         cal['vs'] = vs
     else:
+        cal['ribs'].append({
+            'motorname': motorname,
+            'start': len(cal['ss']),  # if cal['ss'] already has 20 elements, the new rib starts at 20
+            'length': len(ss)
+        }
         cal['ss'] = np.hstack((cal['ss'], ss))
         cal['ts'] = np.hstack((cal['ts'], ts))
         cal['vs'] = np.vstack((cal['vs'], vs))
@@ -475,6 +488,14 @@ def data_handler():
         generator_lock.release()
     # actual drawing is only done after the callback finishes!
 
+def ref_col(a):
+    # select from array with 6 columns mx, my, mz, ax, ay, az, the 3 columns that will be reference
+    # for interpolation, currently: mx, ax, ay
+    if a.ndim > 1:
+        return a[:,[0,3,4]]
+    else:
+        return a[[0,3,4]]
+
 def calibrate():
     global cal
     global elevation  # function
@@ -513,7 +534,7 @@ def calibrate():
             vs = np.vstack((vs, partial_vs))
             swipe_idxs.append(len(times))  
     ss, vs, s_angles = process_swipe(times, vs, swipe_idxs, forward=True)
-    register(ss, np.full((1, len(ss)), 0)[0], vs)  # ts are all zero, full returns [[]], so I need [0]
+    register(ss, np.full((1, len(ss)), 0)[0], vs, "swivel")  # ts are all zero, full returns [[]], so I need [0]
     logging.info(f"Swipe angles are {np.degrees(s_angles)} based on indices {swipe_idxs}")
 
     # sequence of forward partial tilt swipes with 90 swivel angle #20-39
@@ -531,7 +552,7 @@ def calibrate():
             vs = np.vstack((vs, partial_vs))
             swipe_idxs.append(len(times))  
     ts, vs, t_angles = process_swipe(times, vs, swipe_idxs, forward=True)
-    register(np.full((1, len(ts)), np.pi/2)[0], ts, vs)  # ss are all 90 degrees
+    register(np.full((1, len(ts)), np.pi/2)[0], ts, vs, "tilt")  # ss are all 90 degrees
     logging.info(f"Tilt angles are {np.degrees(t_angles)} based on indices {swipe_idxs}")
 
     # sequence of backward partial swivel swipes with 90 tilt angle #40-59
@@ -547,7 +568,7 @@ def calibrate():
             times = np.hstack((times, partial_times + times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
     ss, vs = process_swipe(times, vs, None, forward=False)
-    register(ss, np.full((1, len(ss)), np.pi/2)[0], vs)  # ts are all 90 degrees
+    register(ss, np.full((1, len(ss)), np.pi/2)[0], vs, "swivel")  # ts are all 90 degrees
 
     # sequence of backward partial tilt swipes with 0 swivel angle #60-79
 
@@ -562,7 +583,7 @@ def calibrate():
             times = np.hstack((times, partial_times + times[-1]))  # starting from end time in previous partial swipe
             vs = np.vstack((vs, partial_vs))
     ts, vs = process_swipe(times, vs, None, forward=False)
-    register(np.full((1, len(ts)), 0)[0], ts, vs)  # ss are all 0
+    register(np.full((1, len(ts)), 0)[0], ts, vs, "tilt")  # ss are all 0
 
     # swipes with constant tilt angle #80-99, 100-119, 120-139, 140-159
 
@@ -572,7 +593,7 @@ def calibrate():
         partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_T, motorname="tilt")
         times, vs = swipe(forward=forward, MOTOR=MOTOR_S, motorname="swivel")
         ss, vs = process_swipe(times, vs, None, forward=forward)
-        register(ss, np.full((1, len(ss)), t)[0], vs)  # ts are all t (from t_angles)
+        register(ss, np.full((1, len(ss)), t)[0], vs, "swivel")  # ts are all t (from t_angles)
         forward = not forward  # reverse direction for next iteration
     if not forward:  # last swipe was forward
         retract(MOTOR=MOTOR_S, motorname="swivel")
@@ -586,7 +607,7 @@ def calibrate():
         partial_swipe(duration=partial_motor_travel_time, forward=True, MOTOR=MOTOR_S, motorname="swivel")
         times, vs = swipe(forward=forward, MOTOR=MOTOR_T, motorname="tilt")
         ts, vs = process_swipe(times, vs, None, forward=forward)
-        register(np.full((1, len(ts)), s)[0], ts, vs)  # ss are all s (from s_angles)
+        register(np.full((1, len(ts)), s)[0], ts, vs, "tilt")  # ss are all s (from s_angles)
         forward = not forward  # reverse direction for next iteration
     if not forward:  # last swipe was forward
         retract(MOTOR=MOTOR_T, motorname="tilt")
@@ -605,10 +626,10 @@ def calibrate():
     # initialize interpolcation functions
     logging.info("Generate elevation interpolator")
     #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
-    #elevation = LinearNDInterpolator(cal['vs'][:,[2,3,4]], cal['es'])  # REERENCE mz, ax, ay
+    elevation = LinearNDInterpolator(ref_col(cal['vs']), cal['es'])
     logging.info("Generate heading interpolator")
     #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
-    heading = LinearNDInterpolator(cal['vs'][:,[2,3,4]], cal['hs'])  # REERENCE mz, ax, ay
+    heading = LinearNDInterpolator(ref_col(cal['vs']), cal['hs'])
 
     logging.info("Finished heliostat position calibration")
 
@@ -623,6 +644,8 @@ def save_calibration():
     np.savetxt('es.csv', cal['es'])
     np.savetxt('hs.csv', cal['hs'])
     np.savetxt('pos.csv', np.array([cal['level'], cal['helio_tilt']]))
+    with open('ribs.json', 'w') as outfile:
+        json.dump(cal['ribs'], outfile)
 
 
 def load_calibration():
@@ -637,13 +660,33 @@ def load_calibration():
     cal['es'] = np.loadtxt('es.csv')
     cal['hs'] = np.loadtxt('hs.csv')
     cal['level'], cal['helio_tilt'] = np.loadtxt('pos.csv')
+    with open('ribs.json') as json_file:
+        cal['ribs'] = json.load(json_file)
     # initialize interpolcation functions
     logging.info("Generate elevation interpolator")
     #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
-    elevation = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['es'])  # REFERENCE mx, ax, ay
+    elevation = LinearNDInterpolator(ref_col(cal['vs']), cal['es'])
     logging.info("Generate heading interpolator")
     #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
-    heading = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['hs'])  # REFERENCE mx, ax, ay
+    heading = LinearNDInterpolator(ref_col(cal['vs']), cal['hs'])
+
+def rectangular_interpolator(vin):
+    global cal
+    # for each rib, find the two closest points
+    for rib in cal['ribs']:
+        v1 = None; v2 = None; d1 = None; d2 = None; i1 = None; i2 = None
+        for i in range(rib['start'], rib['start']+rib['length']):
+            v = ref_col(cal['vs'][i])
+            d = np.linalg.norm(v - vin)
+            if not d1:
+                d1 = d; v1 = v; i1 = i
+            elif d <= d1:
+                d2 = d1; v2 = v1; i2 = i1
+                d1 = d; v1 = v; i1 = i
+            elif not d2 or d < d2:
+                d2 = d; v2 = v; i2 = i
+        d, d1, d2 = distance_point_to_line_and_projection_to_end_points(vin, v1, v2)   
+
 
 
 def read_elevation_and_heading():
@@ -652,11 +695,12 @@ def read_elevation_and_heading():
     global magnetometer, accelerometer
     m = magnetometer.read_average(80)  # averaged sample in uT as np.array
     a = accelerometer.read_ms2()  # sample as np.array
+    v = np.hstack((m,a))
     #e = elevation(m[0], m[1], m[2], a[0], a[1], a[2])
     #h = heading(m[0], m[1], m[2], a[0], a[1], a[2])
-    e = elevation(m[0], a[0], a[1])  # REFERENCE mx, ax, ay
-    h = heading(m[0], a[0], a[1])  # REFERENCE mx, ax, ay
-    return m,a,e,h
+    e = elevation(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2])
+    h = heading(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2])
+    return v,e,h
 
 
 def move_and_report():
@@ -665,10 +709,9 @@ def move_and_report():
     def count(start):
         global reporting
         while reporting:
-            m, a, e, h = read_elevation_and_heading()
+            v, e, h = read_elevation_and_heading()
             #print("elevation: {:4.1f} - heading: {:4.1f}".format(np.degrees(e), np.degrees(h)), end="\r")
-            # REFERENCE mx, ax, ay
-            print("mx: {:4.1f} - ax: {:4.1f} - ay: {:4.1f} - elevation: {:4.1f} - heading: {:4.1f}".format(m[0], a[0], a[1], np.degrees(e), np.degrees(h)))
+            print("x: {:4.1f} - y: {:4.1f} - z: {:4.1f} - elevation: {:4.1f} - heading: {:4.1f}".format(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2], np.degrees(e), np.degrees(h)))
             time.sleep(0.1)
 
     def start_moving(direction):
@@ -752,7 +795,17 @@ def angle_between_vector_and_plane(v, n):
     vp = projection_on_plane(v, n)
     return angle_between_vectors(v, vp)
 
-
+def distance_point_to_line_and_projection_to_end_points(a, b, c):
+    '''Returns the distance between a and the line through b and c
+       and the distance from the projection of a on this line to resp. b and c 
+    '''
+    bc = np.linalg.norm(c - b)
+    d = (c - b) / bc
+    v = a - b
+    t = np.dot(v, d)
+    p = b + t * d
+    return np.linalg.norm(p - a), t, abs(bc-t)
+    
 
 def plot(data=None, title=None, final=False):
     global plot_data
