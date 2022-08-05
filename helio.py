@@ -35,9 +35,10 @@ import vg
 ribs data structure:
 [
     {
-        'direction': 'swivel' or 'tilt',  # 'swivel' means: constant tilt angle, and vv.
+        'motorname': 'swivel' or 'tilt',  # 'swivel' means: constant tilt angle, and vv.
         'start': start index in cal['vs'] and derived arrays
         'length': number of entries in cal['vs'] and derived arrays
+        'tmp': {'i1', 'i2', 'd1', 'd2', 'd'}  # while interpolating, contains data about closest points on this rib
     }
 ]
 '''
@@ -672,9 +673,11 @@ def load_calibration():
 
 def rectangular_interpolator(vin):
     global cal
+    vin = ref_col(vin)
     # for each rib, find the two closest points
     for rib in cal['ribs']:
         v1 = None; v2 = None; d1 = None; d2 = None; i1 = None; i2 = None
+        # iterate the cal indices that compose this rib:
         for i in range(rib['start'], rib['start']+rib['length']):
             v = ref_col(cal['vs'][i])
             d = np.linalg.norm(v - vin)
@@ -685,8 +688,71 @@ def rectangular_interpolator(vin):
                 d1 = d; v1 = v; i1 = i
             elif not d2 or d < d2:
                 d2 = d; v2 = v; i2 = i
+        if abs(i1 - i2) > 1: 
+            logging.warning(f"Two closest points on rib are not adjacent: {i1} and {i2}")
         d, d1, d2 = distance_point_to_line_and_projection_to_end_points(vin, v1, v2)   
+        rib['tmp'] = {'i1': i1, 'i2': i2, 'd1': d1, 'd2': d2, 'd': d}
+    # find closest swivel rib
+    s1 = None
+    for rib in cal['ribs']:
+        if rib['motorname'] == 'swivel':
+            if not s1 or rib['tmp']['d'] < s1['tmp']['d']:
+                s1 = rib
+    logging.debug(f"Closest swivel rib starts at {s1['start']}")
+    # find second closes swivel rib (on opposite side!)
+    s2 = None
+    for rib in cal['ribs']:
+        if rib['motorname'] == 'swivel' and not rib == s1:
+            # test if the potential 'second close' point on this rib is on the opposite side of the input:
+            if point_between_two_points_3d(vin, ref_col(cal['vs'][s1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']]):
+                if not s2 or rib['tmp']['d'] < s2['tmp']['d']:
+                    s2 = rib
+    logging.debug(f"Second closest swivel rib starts at {s2['start']}")
+    # find closest tilt rib
+    t1 = None
+    for rib in cal['ribs']:
+        if rib['motorname'] == 'tilt':
+            if not t1 or rib['tmp']['d'] < t1['tmp']['d']:
+                t1 = rib
+    logging.debug(f"Closest tilt rib starts at {t1['start']}")
+    # find second closes tilt rib (on opposite side!)
+    t2 = None
+    for rib in cal['ribs']:
+        if rib['motorname'] == 'tilt' and not rib == t1:
+            # test if the potential 'second close' point on this rib is on the opposite side of the input:
+            if point_between_two_points_3d(vin, ref_col(cal['vs'][t1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']]):
+                if not t2 or rib['tmp']['d'] < t2['tmp']['d']:
+                    t2 = rib
+    logging.debug(f"Second closest tilt rib starts at {t2['start']}")
+    # interpolate elevation and heading between closest points on each rib
+    es1 = interpolate_between_closest_two_points_on_rib(s1, 'es')
+    es2 = interpolate_between_closest_two_points_on_rib(s2, 'es')
+    hs1 = interpolate_between_closest_two_points_on_rib(s1, 'hs')
+    hs1 = interpolate_between_closest_two_points_on_rib(s2, 'hs')
+    et1 = interpolate_between_closest_two_points_on_rib(t1, 'es')
+    et2 = interpolate_between_closest_two_points_on_rib(t2, 'es')
+    ht1 = interpolate_between_closest_two_points_on_rib(t1, 'hs')
+    ht1 = interpolate_between_closest_two_points_on_rib(t2, 'hs')
+    logging.debug(f"Interpolation between points on ribs: es1={es1}, es2={es2}, hs1={hs1}, hs2={hs2}, et1={et1}, et2={et2}, ht1={ht1}, ht2={ht2}") 
+    # interpolate elevation and heading between the opposite ribs
+    es = (es1 * s2['tmp']['d'] + es2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
+    hs = (hs1 * s2['tmp']['d'] + hs2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
+    et = (et1 * s2['tmp']['d'] + et2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
+    ht = (ht1 * s2['tmp']['d'] + ht2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
+    logging.debug(f"Interpolation points between opposite ribs: es={es}, hs={hs}, et={et}, ht={ht}") 
+    # average elevation and heading interpolations
+    e = (es + et) / 2
+    h = (hs + ht) / 2
+    logging.debug(f"Averaged: e={e}, h={h}")
+    return e, h
 
+def interpolate_between_closest_two_points_on_rib(rib, et):
+    # et is either 'es' for elevation or 'hs' for heading
+    # takes weighed average based on the distances to the projection of the input point
+    # on the line between the two closest points on the rib
+    r = rib['tmp']
+    et = (r['d2'] * cal[et][r['i1']] + r['d1'] * cal[et][r['i2']]) / (r['d1'] + r['d2'])
+    return et
 
 
 def read_elevation_and_heading():
@@ -698,8 +764,9 @@ def read_elevation_and_heading():
     v = np.hstack((m,a))
     #e = elevation(m[0], m[1], m[2], a[0], a[1], a[2])
     #h = heading(m[0], m[1], m[2], a[0], a[1], a[2])
-    e = elevation(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2])
-    h = heading(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2])
+    #e = elevation(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2])
+    #h = heading(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2])
+    e, h = rectangular_interpolator(v)
     return v,e,h
 
 
@@ -795,6 +862,16 @@ def angle_between_vector_and_plane(v, n):
     vp = projection_on_plane(v, n)
     return angle_between_vectors(v, vp)
 
+def point_projected_on_line(a, b, c):
+    '''Returns the project of a on the line through b and c
+    '''
+    bc = np.linalg.norm(c - b)
+    d = (c - b) / bc
+    v = a - b
+    t = np.dot(v, d)
+    p = b + t * d
+    return p
+    
 def distance_point_to_line_and_projection_to_end_points(a, b, c):
     '''Returns the distance between a and the line through b and c
        and the distance from the projection of a on this line to resp. b and c 
@@ -803,9 +880,25 @@ def distance_point_to_line_and_projection_to_end_points(a, b, c):
     d = (c - b) / bc
     v = a - b
     t = np.dot(v, d)
-    p = b + t * d
+    p = point_projected_on_line(a, b, c)
     return np.linalg.norm(p - a), t, abs(bc-t)
-    
+
+def point_inbetween_two_other_points(p, a, b):
+    '''Returns true if p is inbetween a and b (all points supposed to be colinear
+    '''
+    ap = p - a
+    bp = p - b
+    # only if p is inbetween a and b, ap and bp have opposite direction
+    # so ||ap+bp|| <= ||ap-bp||  (including the edge case where p = a or p = b)
+    # if p is not inbetween a and b, ap and bp have the same direction
+    # so ||ap+bp|| > ||ap-bp||
+    return np.linalg.norm(ap + bp) <= np.linalg.norm(ap - bp)
+
+def point_inbetween_two_other_points_3d(p, a, b):
+    '''Returns True if projection of p on line ab is between a and b
+    '''
+    p2 = point_projected_on_line(p, a, b)
+    return point_inbetween_two_other_points(p2, a, b)
 
 def plot(data=None, title=None, final=False):
     global plot_data
