@@ -61,12 +61,6 @@ def export_miabellaai():
         f.write("::mx::ax::ay;\n")
         for i, s in enumerate(X):
             f.write(f"#R{i}::{X[i]}::{Y[i]}::{Z[i]}::{C[i]}::4::A::1::0::0::0::0;\n")
-        for xs in Xm:
-            for ys in Ym:
-                for zs in Zm:
-                    e = elevation(xs, ys, zs)
-                    if not math.isnan(e):
-                        f.write(f"#R{xs}/{ys}/{zs}::{xs}::{ys}::{zs}::{e}::1::B::1::0::0::0::0;\n")
 
 def plot():
     cal = {}

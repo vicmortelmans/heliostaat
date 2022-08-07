@@ -12,14 +12,13 @@
 
 import adafruit_fxos8700
 import adafruit_fxas21002c
-from ahrs import Quaternion
-from ahrs.filters import Madgwick, Mahony
 import board
 from bokeh.plotting import curdoc, figure
 from bokeh.models import Button
 import copy
 import csv
 from gpiozero import Motor
+import json
 import logging
 import numpy as np
 import random
@@ -47,7 +46,7 @@ handler_lock = threading.Semaphore(0)  # handler waiting for data
 generator_lock = threading.Semaphore(0)  # generator waiting for user pushing the button
 
 # Setup logging
-logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.INFO)
+logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.DEBUG)
 # force=True is needed because bokeh sets the level down
 
 # Setup motors
@@ -410,7 +409,7 @@ def register(ss, ts, vs, motorname):
             'motorname': motorname,
             'start': len(cal['ss']),  # if cal['ss'] already has 20 elements, the new rib starts at 20
             'length': len(ss)
-        }
+        })
         cal['ss'] = np.hstack((cal['ss'], ss))
         cal['ts'] = np.hstack((cal['ts'], ts))
         cal['vs'] = np.vstack((cal['vs'], vs))
@@ -517,8 +516,8 @@ def calibrate():
     level, helio_tilt = read_level()
     register_position(level, helio_tilt)
     if level > np.pi/20:
-        logging.warning(f"The heliostat isn't mounted level, it's {np.degrees(level)} degrees off.")
-    logging.info(f"The heliostat is mounted with a tilt of {np.degrees(helio_tilt)} degrees.")
+        logging.warning(f"The heliostat isn't mounted level, it's {np.degrees(level):.2f} degrees off.")
+    logging.info(f"The heliostat is mounted with a tilt of {np.degrees(helio_tilt):.2f} degrees.")
 
     # sequence of forward partial swivel swipes with 0 tilt angle #0-19
 
@@ -671,9 +670,29 @@ def load_calibration():
     #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
     heading = LinearNDInterpolator(ref_col(cal['vs']), cal['hs'])
 
+def rib_number_by_start(start):
+    # return rib number by start position
+    map = {
+        0: 1,
+        20: 1,
+        40: 6,
+        60: 6,
+        80: 2,
+        100: 3,
+        120: 4,
+        140: 5,
+        160: 2,
+        180: 3,
+        200: 4,
+        220: 5
+    }
+    return map[start]
+
 def rectangular_interpolator(vin):
     global cal
+    global miabellaai
     vin = ref_col(vin)
+    miabellaai = f"#cal::{vin[0]}::{vin[1]}::{vin[2]}::0::10::B::1::1::0::0::1;\n"
     # for each rib, find the two closest points
     for rib in cal['ribs']:
         v1 = None; v2 = None; d1 = None; d2 = None; i1 = None; i2 = None
@@ -692,67 +711,102 @@ def rectangular_interpolator(vin):
             logging.warning(f"Two closest points on rib are not adjacent: {i1} and {i2}")
         d, d1, d2 = distance_point_to_line_and_projection_to_end_points(vin, v1, v2)   
         rib['tmp'] = {'i1': i1, 'i2': i2, 'd1': d1, 'd2': d2, 'd': d}
+        miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::4::B::1::1::0::0::1;\n"
+        miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::4::B::1::1::0::0::1;\n"
     # find closest swivel rib
     s1 = None
     for rib in cal['ribs']:
         if rib['motorname'] == 'swivel':
             if not s1 or rib['tmp']['d'] < s1['tmp']['d']:
                 s1 = rib
-    logging.debug(f"Closest swivel rib starts at {s1['start']}")
-    # find second closes swivel rib (on opposite side!)
+    logging.debug(f"Closest swivel rib {rib_number_by_start(s1['start'])}")
+    v1 = ref_col(cal['vs'][s1['tmp']['i1']])
+    v2 = ref_col(cal['vs'][s1['tmp']['i2']])
+    miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
+    # find second closest swivel rib (on opposite side!)
     s2 = None
     for rib in cal['ribs']:
         if rib['motorname'] == 'swivel' and not rib == s1:
             # test if the potential 'second close' point on this rib is on the opposite side of the input:
-            if point_between_two_points_3d(vin, ref_col(cal['vs'][s1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']]):
+            if point_inbetween_two_other_points_3d(vin, ref_col(cal['vs'][s1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']])):
                 if not s2 or rib['tmp']['d'] < s2['tmp']['d']:
                     s2 = rib
-    logging.debug(f"Second closest swivel rib starts at {s2['start']}")
+    if s2:
+        logging.debug(f"Second closest swivel rib {rib_number_by_start(s2['start'])}")
+        v1 = ref_col(cal['vs'][s2['tmp']['i1']])
+        v2 = ref_col(cal['vs'][s2['tmp']['i2']])
+        miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
+        miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
+    else:
+        logging.debug(f"No second closest swivel rib")
     # find closest tilt rib
     t1 = None
     for rib in cal['ribs']:
         if rib['motorname'] == 'tilt':
             if not t1 or rib['tmp']['d'] < t1['tmp']['d']:
                 t1 = rib
-    logging.debug(f"Closest tilt rib starts at {t1['start']}")
-    # find second closes tilt rib (on opposite side!)
+    logging.debug(f"Closest tilt rib {rib_number_by_start(t1['start'])}")
+    v1 = ref_col(cal['vs'][t1['tmp']['i1']])
+    v2 = ref_col(cal['vs'][t1['tmp']['i2']])
+    miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
+    # find second closest tilt rib (on opposite side!)
     t2 = None
     for rib in cal['ribs']:
         if rib['motorname'] == 'tilt' and not rib == t1:
             # test if the potential 'second close' point on this rib is on the opposite side of the input:
-            if point_between_two_points_3d(vin, ref_col(cal['vs'][t1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']]):
+            if point_inbetween_two_other_points_3d(vin, ref_col(cal['vs'][t1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']])):
                 if not t2 or rib['tmp']['d'] < t2['tmp']['d']:
                     t2 = rib
-    logging.debug(f"Second closest tilt rib starts at {t2['start']}")
+    if t2:
+        logging.debug(f"Second closest tilt rib {rib_number_by_start(t2['start'])}")
+        v1 = ref_col(cal['vs'][t2['tmp']['i1']])
+        v2 = ref_col(cal['vs'][t2['tmp']['i2']])
+        miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
+        miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
+    else:
+        logging.debug(f"No second closest tilt rib")
     # interpolate elevation and heading between closest points on each rib
-    es1 = interpolate_between_closest_two_points_on_rib(s1, 'es')
-    es2 = interpolate_between_closest_two_points_on_rib(s2, 'es')
-    hs1 = interpolate_between_closest_two_points_on_rib(s1, 'hs')
-    hs1 = interpolate_between_closest_two_points_on_rib(s2, 'hs')
-    et1 = interpolate_between_closest_two_points_on_rib(t1, 'es')
-    et2 = interpolate_between_closest_two_points_on_rib(t2, 'es')
-    ht1 = interpolate_between_closest_two_points_on_rib(t1, 'hs')
-    ht1 = interpolate_between_closest_two_points_on_rib(t2, 'hs')
-    logging.debug(f"Interpolation between points on ribs: es1={es1}, es2={es2}, hs1={hs1}, hs2={hs2}, et1={et1}, et2={et2}, ht1={ht1}, ht2={ht2}") 
+    es1, hs1 = interpolate_between_closest_two_points_on_rib(s1)
+    if s2:
+        es2, hs2 = interpolate_between_closest_two_points_on_rib(s2)
+    else:
+        es2 = None; hs2 = None
+    et1, ht1 = interpolate_between_closest_two_points_on_rib(t1)
+    if t2:
+        et2, ht2 = interpolate_between_closest_two_points_on_rib(t2)
+    else:
+        et2 = None; ht2 = None
+    logging.debug(f"Interpolation between points on ribs: es1={es1:.3f}, es2={es2:.3f}, hs1={hs1:.3f}, hs2={hs2:.3f}, et1={et1:.3f}, et2={et2:.3f}, ht1={ht1:.3f}, ht2={ht2:.3f}") 
     # interpolate elevation and heading between the opposite ribs
-    es = (es1 * s2['tmp']['d'] + es2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
-    hs = (hs1 * s2['tmp']['d'] + hs2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
-    et = (et1 * s2['tmp']['d'] + et2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
-    ht = (ht1 * s2['tmp']['d'] + ht2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
-    logging.debug(f"Interpolation points between opposite ribs: es={es}, hs={hs}, et={et}, ht={ht}") 
+    if s2:
+        es = (es1 * s2['tmp']['d'] + es2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
+        hs = (hs1 * s2['tmp']['d'] + hs2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
+    else:
+        es = es1
+        hs = hs1
+    if t2:
+        et = (et1 * t2['tmp']['d'] + et2 * t1['tmp']['d']) / (t2['tmp']['d'] + t1['tmp']['d'])
+        ht = (ht1 * t2['tmp']['d'] + ht2 * t1['tmp']['d']) / (t2['tmp']['d'] + t1['tmp']['d'])
+    else:
+        et = et1
+        ht = ht1
+    logging.debug(f"Interpolation points between opposite ribs: es={es:.3f}, hs={hs:.3f}, et={et:.3f}, ht={ht:.3f}") 
     # average elevation and heading interpolations
     e = (es + et) / 2
     h = (hs + ht) / 2
-    logging.debug(f"Averaged: e={e}, h={h}")
+    logging.debug(f"Averaged: e={e:.3f}, h={h:.3f}")
+    print(miabellaai)
     return e, h
 
-def interpolate_between_closest_two_points_on_rib(rib, et):
-    # et is either 'es' for elevation or 'hs' for heading
+def interpolate_between_closest_two_points_on_rib(rib):
     # takes weighed average based on the distances to the projection of the input point
     # on the line between the two closest points on the rib
     r = rib['tmp']
-    et = (r['d2'] * cal[et][r['i1']] + r['d1'] * cal[et][r['i2']]) / (r['d1'] + r['d2'])
-    return et
+    e = (r['d2'] * cal['es'][r['i1']] + r['d1'] * cal['es'][r['i2']]) / (r['d1'] + r['d2'])
+    h = (r['d2'] * cal['hs'][r['i1']] + r['d1'] * cal['hs'][r['i2']]) / (r['d1'] + r['d2'])
+    return e, h
 
 
 def read_elevation_and_heading():
@@ -778,7 +832,7 @@ def move_and_report():
         while reporting:
             v, e, h = read_elevation_and_heading()
             #print("elevation: {:4.1f} - heading: {:4.1f}".format(np.degrees(e), np.degrees(h)), end="\r")
-            print("x: {:4.1f} - y: {:4.1f} - z: {:4.1f} - elevation: {:4.1f} - heading: {:4.1f}".format(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2], np.degrees(e), np.degrees(h)))
+            print("x: {:.3f} - y: {:.3f} - z: {:.3f} - elevation: {:.3f} - heading: {:.3f}".format(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2], np.degrees(e), np.degrees(h)))
             time.sleep(0.1)
 
     def start_moving(direction):
