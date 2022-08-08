@@ -23,7 +23,6 @@ import logging
 import numpy as np
 import random
 from scipy import linalg, signal, interpolate
-from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 import scipy.ndimage
 import sys
 import threading
@@ -36,8 +35,7 @@ ribs data structure:
     {
         'motorname': 'swivel' or 'tilt',  # 'swivel' means: constant tilt angle, and vv.
         'start': start index in cal['vs'] and derived arrays
-        'length': number of entries in cal['vs'] and derived arrays
-        'tmp': {'i1', 'i2', 'd1', 'd2', 'd'}  # while interpolating, contains data about closest points on this rib
+        'tmp': {'i1', 'i2', 'd1', 'd2', 'd'}  # while interpolating, contains data about closest points on this rib paired with the next rib (so there won't be 'tmp' in the last rib!)
     }
 ]
 '''
@@ -56,7 +54,7 @@ MOTOR_T = Motor(19, 16)
 
 # Setup calibration data global variable
 NUMBER_OF_PARTIAL_SWIPES = 5
-DOWNSAMPLING = 20  # 4000 samples => 20 samples
+DOWNSAMPLING = 20  # 4000 samples => 20 samples = number of entries on a rib
 
 
 class Gyroscope(object):
@@ -398,8 +396,7 @@ def register(ss, ts, vs, motorname):
         # first entry
         cal['ribs'] = [{
             'motorname': motorname,
-            'start': 0,
-            'length': len(ss)
+            'start': 0
         }]
         cal['ss'] = ss
         cal['ts'] = ts
@@ -407,8 +404,7 @@ def register(ss, ts, vs, motorname):
     else:
         cal['ribs'].append({
             'motorname': motorname,
-            'start': len(cal['ss']),  # if cal['ss'] already has 20 elements, the new rib starts at 20
-            'length': len(ss)
+            'start': len(cal['ss'])  # if cal['ss'] already has DOWNSAMPLING elements, the new rib starts at DOWNSAMPLING
         })
         cal['ss'] = np.hstack((cal['ss'], ss))
         cal['ts'] = np.hstack((cal['ts'], ts))
@@ -492,9 +488,13 @@ def ref_col(a):
     # select from array with 6 columns mx, my, mz, ax, ay, az, the 3 columns that will be reference
     # for interpolation, currently: mx, ax, ay
     if a.ndim > 1:
-        return a[:,[0,3,4]]
+        a_copy = np.copy(a)
+        a_copy[:,0] /= 8  # this is mx
+        return a_copy[:,[0,3,4]]
     else:
-        return a[[0,3,4]]
+        a_copy = np.copy(a)
+        a_copy[0] /= 8  # this is mx
+        return a_copy[[0,3,4]]
 
 def calibrate():
     global cal
@@ -623,14 +623,6 @@ def calibrate():
     logging.info("Register hs")
     register_by_name(headings(), 'hs')
 
-    # initialize interpolcation functions
-    logging.info("Generate elevation interpolator")
-    #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
-    elevation = LinearNDInterpolator(ref_col(cal['vs']), cal['es'])
-    logging.info("Generate heading interpolator")
-    #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
-    heading = LinearNDInterpolator(ref_col(cal['vs']), cal['hs'])
-
     logging.info("Finished heliostat position calibration")
 
 
@@ -662,29 +654,42 @@ def load_calibration():
     cal['level'], cal['helio_tilt'] = np.loadtxt('pos.csv')
     with open('ribs.json') as json_file:
         cal['ribs'] = json.load(json_file)
-    # initialize interpolcation functions
-    logging.info("Generate elevation interpolator")
-    #elevation = LinearNDInterpolator(cal['vs'], cal['es'])
-    elevation = LinearNDInterpolator(ref_col(cal['vs']), cal['es'])
-    logging.info("Generate heading interpolator")
-    #heading = LinearNDInterpolator(cal['vs'], cal['hs'])
-    heading = LinearNDInterpolator(ref_col(cal['vs']), cal['hs'])
 
 def rib_number_by_start(start):
     # return rib number by start position
+    # this assumes DOWNSAMPLING = 20
     map = {
-        0: 1,
-        20: 1,
-        40: 6,
-        60: 6,
-        80: 2,
-        100: 3,
-        120: 4,
-        140: 5,
-        160: 2,
-        180: 3,
-        200: 4,
-        220: 5
+        0: 1,  # swivel
+        20: 1,  # tilt
+        40: 6,  # swivel
+        60: 6,  # tilt
+        80: 2,  # swivel
+        100: 3,  # swivel
+        120: 4,  # swivel
+        140: 5,  # swivel
+        160: 2,  # tilt
+        180: 3,  # tilt
+        200: 4,  # tilt
+        220: 5  # tilt
+    }
+    return map[start]
+
+def next_rib(start):
+    # return next rib start
+    # this assumes DOWNSAMPLING = 20
+    map = {
+        0: 80,
+        20: 160,
+        40: None,
+        60: None,
+        80: 100,
+        100: 120,
+        120: 140,
+        140: 40,
+        160: 180,
+        180: 200,
+        200: 220,
+        220: 60
     }
     return map[start]
 
@@ -692,106 +697,97 @@ def rectangular_interpolator(vin):
     global cal
     global miabellaai
     vin = ref_col(vin)
-    miabellaai = f"#cal::{vin[0]}::{vin[1]}::{vin[2]}::0::10::B::1::1::0::0::1;\n"
-    # for each rib, find the two closest points
+    miabellaai = f"#cal::{vin[0]*8}::{vin[1]}::{vin[2]}::10::10::B::1::1::0::0::1;\n"
+    # for each pair of ribs, find the four closest points, pair by pair
     for rib in cal['ribs']:
-        v1 = None; v2 = None; d1 = None; d2 = None; i1 = None; i2 = None
-        # iterate the cal indices that compose this rib:
-        for i in range(rib['start'], rib['start']+rib['length']):
-            v = ref_col(cal['vs'][i])
-            d = np.linalg.norm(v - vin)
-            if not d1:
-                d1 = d; v1 = v; i1 = i
-            elif d <= d1:
-                d2 = d1; v2 = v1; i2 = i1
-                d1 = d; v1 = v; i1 = i
-            elif not d2 or d < d2:
-                d2 = d; v2 = v; i2 = i
-        if abs(i1 - i2) > 1: 
-            logging.warning(f"Two closest points on rib are not adjacent: {i1} and {i2}")
-        d, d1, d2 = distance_point_to_line_and_projection_to_end_points(vin, v1, v2)   
-        rib['tmp'] = {'i1': i1, 'i2': i2, 'd1': d1, 'd2': d2, 'd': d}
-        miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::4::B::1::1::0::0::1;\n"
-        miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::4::B::1::1::0::0::1;\n"
-    # find closest swivel rib
+        rstart = rib['start']
+        nrstart = next_rib(rstart)
+        if nrstart:
+            logging.info(f"Checking {rib['motorname']} rib pair {rib_number_by_start(rstart)} ({rstart}) and {rib_number_by_start(nrstart)} ({nrstart})")
+            # each pair of ribs will yield these metrics:
+            # Ds(s) = (second) smallest D = distance from vin to the line connecting two corresponding points
+            # v(n)s(s) = point on (next) rib where (second) smallest d was found
+            # i_(n)s(s) = index in cal['vs'] for this point
+            # d(n)s(s) = distance between perp.proj. of vin on the line and v(n)s(s)
+            Ds = None; Dss = None
+            # iterate the points on this rib two by two:
+            for i in range(rstart, rstart+DOWNSAMPLING-1):
+                i_n = i - rstart + nrstart 
+                v = ref_col(cal['vs'][i])  # point of the rib
+                vn = ref_col(cal['vs'][i_n])  # corresponding point on the next rib
+                if point_inbetween_two_other_points_3d(vin, v, vn):
+                    D, d, dn = distance_point_to_line_and_projection_to_end_points(vin, v, vn)   
+                    if not Ds: 
+                        Ds = D; vs = v; vns = vn; i_s = i; i_ns = i_n; ds = d; dns = dn 
+                    elif D < Ds:
+                        Dss = Ds; vss = vs; vnss = vns; i_ss = i_s; i_nss = i_ns; dss = ds; dnss = dns
+                        Ds = D; vs = v; vns = vn; i_s = i; i_ns = i_n; ds = d; dns = dn 
+                    elif not Dss or D < Dss:
+                        Dss = D; vss = v; vnss = vn; i_ss = i; i_nss = i_n; dss = d; dnss = dn 
+            if not Ds:
+                # iterate the points on this rib two by two again, but now omitting the condition 
+                # that the input point lies inbetween (in 3D) the two points on the rib
+                for i in range(rstart, rstart+DOWNSAMPLING-1):
+                    i_n = i - rstart + nrstart
+                    v = ref_col(cal['vs'][i])  # point of the rib
+                    vn = ref_col(cal['vs'][i_n])  # corresponding point on the next rib
+                    D, d, dn = distance_point_to_line_and_projection_to_end_points(vin, v, vn)   
+                    if not Ds: 
+                        Ds = D; vs = v; vns = vn; i_s = i; i_ns = i_n; ds = d; dns = dn 
+                    elif D < Ds:
+                        Dss = Ds; vss = vs; vnss = vns; i_ss = i_s; i_nss = i_ns; dss = ds; dnss = dns
+                        Ds = D; vs = v; vns = vn; i_s = i; i_ns = i_n; ds = d; dns = dn 
+                    elif not Dss or D < Dss:
+                        Dss = D; vss = v; vnss = vn; i_ss = i; i_nss = i_n; dss = d; dnss = dn 
+            if not point_inbetween_two_other_points_3d(vin, vs, vns):
+                logging.warning(f"Input looks not to be inbetween {rib['motorname']} rib {rib_number_by_start(rstart)} and {rib_number_by_start(nrstart)} closest pair")
+            if not point_inbetween_two_other_points_3d(vin, vss, vnss):
+                logging.warning(f"Input looks not to be inbetween {rib['motorname']} rib {rib_number_by_start(rstart)} and {rib_number_by_start(nrstart)} second closest pair")
+            logging.info(f"Four closest points have indices {i_s} and {i_ns} (line at distance {Ds} from input) and {i_ss} and {i_nss} (line at distance {Dss} from input)")
+            rib['tmp'] = {'i_s': i_s, 'i_ns': i_ns, 'i_ss': i_ss, 'i_nss': i_nss, 'ds': ds, 'dns': dns, 'dss': dss, 'dnss': dnss, 'Ds': Ds, 'Dss': Dss}
+            miabellaai += f"#cal::{vs[0]*8}::{vs[1]}::{vs[2]}::0::6::B::1::0::0::0::1;\n"
+            miabellaai += f"#cal::{vns[0]*8}::{vns[1]}::{vns[2]}::0::6::B::1::0::0::0::1;\n"
+            miabellaai += f"#cal::{vss[0]*8}::{vss[1]}::{vss[2]}::0::6::B::1::0::0::0::1;\n"
+            miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]}::{vnss[2]}::0::6::B::1::0::0::0::1;\n"
+    # find closest pair of swivel ribs
     s1 = None
     for rib in cal['ribs']:
-        if rib['motorname'] == 'swivel':
-            if not s1 or rib['tmp']['d'] < s1['tmp']['d']:
-                s1 = rib
-    logging.debug(f"Closest swivel rib {rib_number_by_start(s1['start'])}")
-    v1 = ref_col(cal['vs'][s1['tmp']['i1']])
-    v2 = ref_col(cal['vs'][s1['tmp']['i2']])
-    miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
-    # find second closest swivel rib (on opposite side!)
-    s2 = None
-    for rib in cal['ribs']:
-        if rib['motorname'] == 'swivel' and not rib == s1:
-            # test if the potential 'second close' point on this rib is on the opposite side of the input:
-            if point_inbetween_two_other_points_3d(vin, ref_col(cal['vs'][s1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']])):
-                if not s2 or rib['tmp']['d'] < s2['tmp']['d']:
-                    s2 = rib
-    if s2:
-        logging.debug(f"Second closest swivel rib {rib_number_by_start(s2['start'])}")
-        v1 = ref_col(cal['vs'][s2['tmp']['i1']])
-        v2 = ref_col(cal['vs'][s2['tmp']['i2']])
-        miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
-        miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
-    else:
-        logging.debug(f"No second closest swivel rib")
+        rstart = rib['start']
+        nrstart = next_rib(rstart)
+        if nrstart:
+            if rib['motorname'] == 'swivel':
+                if not s1 or rib['tmp']['Ds'] < s1['tmp']['Ds']:
+                    s1 = rib
+    logging.debug(f"Closest swivel rib pair {rib_number_by_start(s1['start'])} and next rib")
+    vs = ref_col(cal['vs'][s1['tmp']['i_s']])
+    vns = ref_col(cal['vs'][s1['tmp']['i_ns']])
+    vss = ref_col(cal['vs'][s1['tmp']['i_ss']])
+    vnss = ref_col(cal['vs'][s1['tmp']['i_nss']])
+    miabellaai += f"#cal::{vs[0]*8}::{vs[1]}::{vs[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vns[0]*8}::{vns[1]}::{vns[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vss[0]*8}::{vss[1]}::{vss[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]}::{vnss[2]}::0::10::B::1::1::0::0::1;\n"
     # find closest tilt rib
     t1 = None
     for rib in cal['ribs']:
-        if rib['motorname'] == 'tilt':
-            if not t1 or rib['tmp']['d'] < t1['tmp']['d']:
-                t1 = rib
-    logging.debug(f"Closest tilt rib {rib_number_by_start(t1['start'])}")
-    v1 = ref_col(cal['vs'][t1['tmp']['i1']])
-    v2 = ref_col(cal['vs'][t1['tmp']['i2']])
-    miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
-    # find second closest tilt rib (on opposite side!)
-    t2 = None
-    for rib in cal['ribs']:
-        if rib['motorname'] == 'tilt' and not rib == t1:
-            # test if the potential 'second close' point on this rib is on the opposite side of the input:
-            if point_inbetween_two_other_points_3d(vin, ref_col(cal['vs'][t1['tmp']['i1']]), ref_col(cal['vs'][rib['tmp']['i2']])):
-                if not t2 or rib['tmp']['d'] < t2['tmp']['d']:
-                    t2 = rib
-    if t2:
-        logging.debug(f"Second closest tilt rib {rib_number_by_start(t2['start'])}")
-        v1 = ref_col(cal['vs'][t2['tmp']['i1']])
-        v2 = ref_col(cal['vs'][t2['tmp']['i2']])
-        miabellaai += f"#cal::{v1[0]}::{v1[1]}::{v1[2]}::0::8::B::1::1::0::0::1;\n"
-        miabellaai += f"#cal::{v2[0]}::{v2[1]}::{v2[2]}::0::8::B::1::1::0::0::1;\n"
-    else:
-        logging.debug(f"No second closest tilt rib")
+        rstart = rib['start']
+        nrstart = next_rib(rstart)
+        if nrstart:
+            if rib['motorname'] == 'tilt':
+                if not t1 or rib['tmp']['Ds'] < t1['tmp']['Ds']:
+                    t1 = rib
+    logging.debug(f"Closest tilt rib pair {rib_number_by_start(t1['start'])} and next rib")
+    vs = ref_col(cal['vs'][t1['tmp']['i_s']])
+    vns = ref_col(cal['vs'][t1['tmp']['i_ns']])
+    vss = ref_col(cal['vs'][t1['tmp']['i_ss']])
+    vnss = ref_col(cal['vs'][t1['tmp']['i_nss']])
+    miabellaai += f"#cal::{vs[0]*8}::{vs[1]}::{vs[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vns[0]*8}::{vns[1]}::{vns[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vss[0]*8}::{vss[1]}::{vss[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]}::{vnss[2]}::0::10::B::1::1::0::0::1;\n"
     # interpolate elevation and heading between closest points on each rib
-    es1, hs1 = interpolate_between_closest_two_points_on_rib(s1)
-    if s2:
-        es2, hs2 = interpolate_between_closest_two_points_on_rib(s2)
-    else:
-        es2 = None; hs2 = None
-    et1, ht1 = interpolate_between_closest_two_points_on_rib(t1)
-    if t2:
-        et2, ht2 = interpolate_between_closest_two_points_on_rib(t2)
-    else:
-        et2 = None; ht2 = None
-    logging.debug(f"Interpolation between points on ribs: es1={es1:.3f}, es2={es2:.3f}, hs1={hs1:.3f}, hs2={hs2:.3f}, et1={et1:.3f}, et2={et2:.3f}, ht1={ht1:.3f}, ht2={ht2:.3f}") 
-    # interpolate elevation and heading between the opposite ribs
-    if s2:
-        es = (es1 * s2['tmp']['d'] + es2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
-        hs = (hs1 * s2['tmp']['d'] + hs2 * s1['tmp']['d']) / (s2['tmp']['d'] + s1['tmp']['d'])
-    else:
-        es = es1
-        hs = hs1
-    if t2:
-        et = (et1 * t2['tmp']['d'] + et2 * t1['tmp']['d']) / (t2['tmp']['d'] + t1['tmp']['d'])
-        ht = (ht1 * t2['tmp']['d'] + ht2 * t1['tmp']['d']) / (t2['tmp']['d'] + t1['tmp']['d'])
-    else:
-        et = et1
-        ht = ht1
+    es, hs = interpolate_between_closest_four_points_on_rib(s1)
+    et, ht = interpolate_between_closest_four_points_on_rib(t1)
     logging.debug(f"Interpolation points between opposite ribs: es={es:.3f}, hs={hs:.3f}, et={et:.3f}, ht={ht:.3f}") 
     # average elevation and heading interpolations
     e = (es + et) / 2
@@ -800,12 +796,17 @@ def rectangular_interpolator(vin):
     print(miabellaai)
     return e, h
 
-def interpolate_between_closest_two_points_on_rib(rib):
-    # takes weighed average based on the distances to the projection of the input point
+def interpolate_between_closest_four_points_on_rib(rib):
+    # takes weighed average of elevation and heading values,  
+    # based on the distances to the projection of the input point
     # on the line between the two closest points on the rib
     r = rib['tmp']
-    e = (r['d2'] * cal['es'][r['i1']] + r['d1'] * cal['es'][r['i2']]) / (r['d1'] + r['d2'])
-    h = (r['d2'] * cal['hs'][r['i1']] + r['d1'] * cal['hs'][r['i2']]) / (r['d1'] + r['d2'])
+    es = (r['dns'] * cal['es'][r['i_s']] + r['ds'] * cal['es'][r['i_ns']]) / (r['dns'] + r['ds'])
+    ess = (r['dnss'] * cal['es'][r['i_ss']] + r['dss'] * cal['es'][r['i_nss']]) / (r['dnss'] + r['dss'])
+    hs = (r['dns'] * cal['hs'][r['i_s']] + r['ds'] * cal['hs'][r['i_ns']]) / (r['dns'] + r['ds'])
+    hss = (r['dnss'] * cal['hs'][r['i_ss']] + r['dss'] * cal['hs'][r['i_nss']]) / (r['dnss'] + r['dss'])
+    e = (r['Ds'] * ess + r['Dss'] * es) / (r['Ds'] + r['Dss'])
+    h = (r['Ds'] * hss + r['Dss'] * hs) / (r['Ds'] + r['Dss'])
     return e, h
 
 
