@@ -345,8 +345,7 @@ def process_swipe(times, vs, special_idx, forward=True):
     timemax = times[-1]  # last element = times[timeindexmax-1]
     if not forward:
         logging.info("swiping backward, so flipping order of timestamps, because offset_to_hinge function is direction-dependent and fist v should map to 90 degrees and last v to zero degrees!")
-        times = np.flip(times)
-        #vs = np.flip(vs, 0)
+        times = np.flip(times)  # so now the times are backwards as well, just like the vs
     angs = normalized_offset_to_hinge_angle(times/timemax)
     # special angles
     if special_idx:
@@ -354,9 +353,11 @@ def process_swipe(times, vs, special_idx, forward=True):
     else:
         special_angles = None
     # downsample
-    number_of_samples = DOWNSAMPLING
-    vs = downsample_columns(vs, number_of_samples)
-    angs = downsample_array(angs, number_of_samples)
+    vs = downsample_columns(vs, DOWNSAMPLING)
+    angs = downsample_array(angs, DOWNSAMPLING)
+    if not forward:
+        angs = np.flip(angs)
+        vs = np.flip(vs, 0)  # now both angs and vs are forward, to allow mapping points on rib pairs during calibration
     if special_idx:
         return angs, vs, special_angles
     else:
