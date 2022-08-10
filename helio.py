@@ -44,7 +44,7 @@ handler_lock = threading.Semaphore(0)  # handler waiting for data
 generator_lock = threading.Semaphore(0)  # generator waiting for user pushing the button
 
 # Setup logging
-logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.DEBUG)
+logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.INFO)
 # force=True is needed because bokeh sets the level down
 
 # Setup motors
@@ -704,7 +704,7 @@ def rectangular_interpolator(vin):
         rstart = rib['start']
         nrstart = next_rib(rstart)
         if nrstart:
-            logging.info(f"Checking {rib['motorname']} rib pair {rib_number_by_start(rstart)} ({rstart}) and {rib_number_by_start(nrstart)} ({nrstart})")
+            logging.debug(f"Checking {rib['motorname']} rib pair {rib_number_by_start(rstart)} ({rstart}) and {rib_number_by_start(nrstart)} ({nrstart})")
             # each pair of ribs will yield these metrics:
             # Ds(s) = (second) smallest D = distance from vin to the line connecting two corresponding points
             # v(n)s(s) = point on (next) rib where (second) smallest d was found
@@ -741,10 +741,10 @@ def rectangular_interpolator(vin):
                     elif not Dss or D < Dss:
                         Dss = D; vss = v; vnss = vn; i_ss = i; i_nss = i_n; dss = d; dnss = dn 
             if not point_inbetween_two_other_points_3d(vin, vs, vns):
-                logging.warning(f"Input looks not to be inbetween {rib['motorname']} rib {rib_number_by_start(rstart)} and {rib_number_by_start(nrstart)} closest pair")
+                logging.debug(f"Input looks not to be inbetween {rib['motorname']} rib {rib_number_by_start(rstart)} and {rib_number_by_start(nrstart)} closest pair")
             if not point_inbetween_two_other_points_3d(vin, vss, vnss):
-                logging.warning(f"Input looks not to be inbetween {rib['motorname']} rib {rib_number_by_start(rstart)} and {rib_number_by_start(nrstart)} second closest pair")
-            logging.info(f"Four closest points have indices {i_s} and {i_ns} (line at distance {Ds} from input) and {i_ss} and {i_nss} (line at distance {Dss} from input)")
+                logging.debug(f"Input looks not to be inbetween {rib['motorname']} rib {rib_number_by_start(rstart)} and {rib_number_by_start(nrstart)} second closest pair")
+            logging.debug(f"Four closest points have indices {i_s} and {i_ns} (line at distance {Ds} from input) and {i_ss} and {i_nss} (line at distance {Dss} from input)")
             rib['tmp'] = {'i_s': i_s, 'i_ns': i_ns, 'i_ss': i_ss, 'i_nss': i_nss, 'ds': ds, 'dns': dns, 'dss': dss, 'dnss': dnss, 'Ds': Ds, 'Dss': Dss}
             miabellaai += f"#cal::{vs[0]*8}::{vs[1]}::{vs[2]}::0::6::B::1::0::0::0::1;\n"
             miabellaai += f"#cal::{vns[0]*8}::{vns[1]}::{vns[2]}::0::6::B::1::0::0::0::1;\n"
@@ -793,8 +793,8 @@ def rectangular_interpolator(vin):
     # average elevation and heading interpolations
     e = (es + et) / 2
     h = (hs + ht) / 2
-    logging.debug(f"Averaged: e={e:.3f}, h={h:.3f}")
-    print(miabellaai)
+    logging.debug(f"Averaged: e={np.degrees(e):.3f}, h={np.degrees(h):.3f}")
+    #print(miabellaai)
     return e, h
 
 def interpolate_between_closest_four_points_on_rib(rib):
