@@ -680,9 +680,9 @@ def next_rib(start):
     # this assumes DOWNSAMPLING = 20
     map = {
         0: 80,
-        20: 160,
+        20: None,
         40: None,
-        60: None,
+        60: 160,
         80: 100,
         100: 120,
         120: 140,
@@ -690,7 +690,7 @@ def next_rib(start):
         160: 180,
         180: 200,
         200: 220,
-        220: 60
+        220: 20
     }
     return map[start]
 
