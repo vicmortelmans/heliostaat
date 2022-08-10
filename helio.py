@@ -630,10 +630,10 @@ def calibrate():
 def save_calibration():
     global cal
     logging.info("Writing data to file")
-    np.savetxt('ss.csv', cal['ss'])
-    np.savetxt('ts.csv', cal['ts'])
+    #np.savetxt('ss.csv', cal['ss'])
+    #np.savetxt('ts.csv', cal['ts'])
     np.savetxt('vs.csv', cal['vs'])
-    np.savetxt('ns.csv', cal['ns'])
+    #np.savetxt('ns.csv', cal['ns'])
     np.savetxt('es.csv', cal['es'])
     np.savetxt('hs.csv', cal['hs'])
     np.savetxt('pos.csv', np.array([cal['level'], cal['helio_tilt']]))
@@ -646,10 +646,10 @@ def load_calibration():
     global elevation  # function
     global heading  # function
     cal = {}
-    cal['ss'] = np.loadtxt('ss.csv')
-    cal['ts'] = np.loadtxt('ts.csv')
+    #cal['ss'] = np.loadtxt('ss.csv')
+    #cal['ts'] = np.loadtxt('ts.csv')
     cal['vs'] = np.loadtxt('vs.csv')
-    cal['ns'] = np.loadtxt('ns.csv')
+    #cal['ns'] = np.loadtxt('ns.csv')
     cal['es'] = np.loadtxt('es.csv')
     cal['hs'] = np.loadtxt('hs.csv')
     cal['level'], cal['helio_tilt'] = np.loadtxt('pos.csv')
@@ -662,16 +662,16 @@ def rib_number_by_start(start):
     map = {
         0: 1,  # swivel
         20: 1,  # tilt
-        40: 6,  # swivel
-        60: 6,  # tilt
+        40: 6,  # swivel backward
+        60: 6,  # tilt backward
         80: 2,  # swivel
-        100: 3,  # swivel
+        100: 3,  # swivel backward
         120: 4,  # swivel
-        140: 5,  # swivel
+        140: 5,  # swivel backward
         160: 2,  # tilt
-        180: 3,  # tilt
+        180: 3,  # tilt backward
         200: 4,  # tilt
-        220: 5  # tilt
+        220: 5  # tilt backward
     }
     return map[start]
 
@@ -725,7 +725,7 @@ def rectangular_interpolator(vin):
                         Ds = D; vs = v; vns = vn; i_s = i; i_ns = i_n; ds = d; dns = dn 
                     elif not Dss or D < Dss:
                         Dss = D; vss = v; vnss = vn; i_ss = i; i_nss = i_n; dss = d; dnss = dn 
-            if not Ds:
+            if not Ds or not Dss:
                 # iterate the points on this rib two by two again, but now omitting the condition 
                 # that the input point lies inbetween (in 3D) the two points on the rib
                 for i in range(rstart, rstart+DOWNSAMPLING-1):
