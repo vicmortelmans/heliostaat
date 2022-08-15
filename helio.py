@@ -44,7 +44,7 @@ handler_lock = threading.Semaphore(0)  # handler waiting for data
 generator_lock = threading.Semaphore(0)  # generator waiting for user pushing the button
 
 # Setup logging
-logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.INFO)
+logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d %(funcName)s] %(message)s', datefmt='%Y-%m-%d:%H:%M:%S', level=logging.DEBUG)
 # force=True is needed because bokeh sets the level down
 
 # Setup motors
@@ -794,7 +794,7 @@ def rectangular_interpolator(vin):
     e = (es + et) / 2
     h = (hs + ht) / 2
     logging.debug(f"Averaged: e={np.degrees(e):.3f}, h={np.degrees(h):.3f}")
-    #print(miabellaai)
+    print(miabellaai)
     return e, h
 
 def interpolate_between_closest_four_points_on_rib(rib):
