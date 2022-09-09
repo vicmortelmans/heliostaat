@@ -487,15 +487,17 @@ def data_handler():
 
 def ref_col(a):
     # select from array with 6 columns mx, my, mz, ax, ay, az, the 3 columns that will be reference
-    # for interpolation, currently: mx, ax, ay
+    # for interpolation, currently: mx, mz, az
     if a.ndim > 1:
         a_copy = np.copy(a)
         a_copy[:,0] /= 8  # this is mx
-        return a_copy[:,[0,3,4]]
+        a_copy[:,2] /= 8  # this is mz
+        return a_copy[:,[0,2,5]]
     else:
         a_copy = np.copy(a)
         a_copy[0] /= 8  # this is mx
-        return a_copy[[0,3,4]]
+        a_copy[2] /= 8  # this is mz
+        return a_copy[[0,2,5]]
 
 def calibrate():
     global cal
@@ -661,9 +663,9 @@ def rib_number_by_start(start):
     # this assumes DOWNSAMPLING = 20
     map = {
         0: 1,  # swivel
-        20: 1,  # tilt
+        20: 6,  # tilt
         40: 6,  # swivel backward
-        60: 6,  # tilt backward
+        60: 1,  # tilt backward
         80: 2,  # swivel
         100: 3,  # swivel backward
         120: 4,  # swivel
@@ -697,8 +699,10 @@ def next_rib(start):
 def rectangular_interpolator(vin):
     global cal
     global miabellaai
+    logging.debug(f"Input point {vin}")
     vin = ref_col(vin)
-    miabellaai = f"#cal::{vin[0]*8}::{vin[1]}::{vin[2]}::10::10::B::1::1::0::0::1;\n"
+    logging.debug(f"Using coordinates {vin}")
+    miabellaai = f"#cal::{vin[0]*8}::{vin[1]*8}::{vin[2]}::10::10::B::1::1::0::0::1;\n"
     # for each pair of ribs, find the four closest points, pair by pair
     for rib in cal['ribs']:
         rstart = rib['start']
@@ -746,10 +750,10 @@ def rectangular_interpolator(vin):
                 logging.debug(f"Input looks not to be inbetween {rib['motorname']} rib {rib_number_by_start(rstart)} and {rib_number_by_start(nrstart)} second closest pair")
             logging.debug(f"Four closest points have indices {i_s} and {i_ns} (line at distance {Ds} from input) and {i_ss} and {i_nss} (line at distance {Dss} from input)")
             rib['tmp'] = {'i_s': i_s, 'i_ns': i_ns, 'i_ss': i_ss, 'i_nss': i_nss, 'ds': ds, 'dns': dns, 'dss': dss, 'dnss': dnss, 'Ds': Ds, 'Dss': Dss}
-            miabellaai += f"#cal::{vs[0]*8}::{vs[1]}::{vs[2]}::0::6::B::1::0::0::0::1;\n"
-            miabellaai += f"#cal::{vns[0]*8}::{vns[1]}::{vns[2]}::0::6::B::1::0::0::0::1;\n"
-            miabellaai += f"#cal::{vss[0]*8}::{vss[1]}::{vss[2]}::0::6::B::1::0::0::0::1;\n"
-            miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]}::{vnss[2]}::0::6::B::1::0::0::0::1;\n"
+            miabellaai += f"#cal::{vs[0]*8}::{vs[1]*8}::{vs[2]}::0::6::B::1::0::0::0::1;\n"
+            miabellaai += f"#cal::{vns[0]*8}::{vns[1]*8}::{vns[2]}::0::6::B::1::0::0::0::1;\n"
+            miabellaai += f"#cal::{vss[0]*8}::{vss[1]*8}::{vss[2]}::0::6::B::1::0::0::0::1;\n"
+            miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]*8}::{vnss[2]}::0::6::B::1::0::0::0::1;\n"
     # find closest pair of swivel ribs
     s1 = None
     for rib in cal['ribs']:
@@ -764,11 +768,11 @@ def rectangular_interpolator(vin):
     vns = ref_col(cal['vs'][s1['tmp']['i_ns']])
     vss = ref_col(cal['vs'][s1['tmp']['i_ss']])
     vnss = ref_col(cal['vs'][s1['tmp']['i_nss']])
-    miabellaai += f"#cal::{vs[0]*8}::{vs[1]}::{vs[2]}::0::10::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{vns[0]*8}::{vns[1]}::{vns[2]}::0::10::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{vss[0]*8}::{vss[1]}::{vss[2]}::0::10::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]}::{vnss[2]}::0::10::B::1::1::0::0::1;\n"
-    # find closest tilt rib
+    miabellaai += f"#cal::{vs[0]*8}::{vs[1]*8}::{vs[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vns[0]*8}::{vns[1]*8}::{vns[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vss[0]*8}::{vss[1]*8}::{vss[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]*8}::{vnss[2]}::0::10::B::1::1::0::0::1;\n"
+    # find closest pair of tilt ribs
     t1 = None
     for rib in cal['ribs']:
         rstart = rib['start']
@@ -782,10 +786,10 @@ def rectangular_interpolator(vin):
     vns = ref_col(cal['vs'][t1['tmp']['i_ns']])
     vss = ref_col(cal['vs'][t1['tmp']['i_ss']])
     vnss = ref_col(cal['vs'][t1['tmp']['i_nss']])
-    miabellaai += f"#cal::{vs[0]*8}::{vs[1]}::{vs[2]}::0::10::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{vns[0]*8}::{vns[1]}::{vns[2]}::0::10::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{vss[0]*8}::{vss[1]}::{vss[2]}::0::10::B::1::1::0::0::1;\n"
-    miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]}::{vnss[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vs[0]*8}::{vs[1]*8}::{vs[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vns[0]*8}::{vns[1]*8}::{vns[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vss[0]*8}::{vss[1]*8}::{vss[2]}::0::10::B::1::1::0::0::1;\n"
+    miabellaai += f"#cal::{vnss[0]*8}::{vnss[1]*8}::{vnss[2]}::0::10::B::1::1::0::0::1;\n"
     # interpolate elevation and heading between closest points on each rib
     es, hs = interpolate_between_closest_four_points_on_rib(s1)
     et, ht = interpolate_between_closest_four_points_on_rib(t1)

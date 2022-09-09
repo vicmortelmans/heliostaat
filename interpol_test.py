@@ -15,7 +15,7 @@ def load_calibration():
     cal['es'] = np.loadtxt('es.csv')
     # initialize interpolcation functions
     logging.info("Generate elevation interpolator")
-    elevation = LinearNDInterpolator(cal['vs'][:,[0,3,4]], cal['es'])  # mx, ax, ay
+    elevation = LinearNDInterpolator(cal['vs'][:,[0,2,5]], cal['es'])  # mx, mz, az
     return elevation
 
 def ref_check():
@@ -25,7 +25,7 @@ def ref_check():
     elevation = load_calibration()
     for sample in cal['vs']:
         e = elevation(sample[0], sample[3], sample[4])
-        print(f"mx: {sample[0]}, ax: {sample[3]}, ay: {sample[4]}, e: {e}") 
+        print(f"mx: {sample[0]}, mz: {sample[2]}, az: {sample[5]}, e: {e}") 
 
 def brute_force():
     elevation = load_calibration()
@@ -46,9 +46,9 @@ def export_miabellaai():
     cal['es'] = np.loadtxt('es.csv')
     elevation = load_calibration()
 
-    X = cal['vs'][:,0]
-    Y = cal['vs'][:,3]
-    Z = cal['vs'][:,4]
+    X = cal['vs'][:,0]  # mx
+    Y = cal['vs'][:,2]  # mz
+    Z = cal['vs'][:,5]  # az
     C = cal['es']
 
     
