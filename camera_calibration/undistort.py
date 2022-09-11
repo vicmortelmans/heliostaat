@@ -1,15 +1,19 @@
-# https://medium.com/@kennethjiang/calibrate-fisheye-lens-using-opencv-part-2-13990f1b157f
-# You should replace these 3 lines with the output in calibration step
-DIM=XXX
-K=np.array(YYY)
-D=np.array(ZZZ)
+# https://docs.opencv.org/3.0-beta/doc/py_tutorials/py_calib3d/py_calibration/py_calibration.html#calibration
+# run as python3 undistort.py <image filename>
+import numpy as np
+import cv2
+import sys
+
+DIM=(2592, 1944)
+mtx=np.array([[1513.35202186325, 0.0, 1381.794375023546], [0.0, 1514.809082655238, 1022.1313014429818], [0.0, 0.0, 1.0]])
+dist=np.array([[-0.3293226333311312, 0.13030355339675337, 0.00020716954584170977, -0.00032937886446441326, -0.027128518075549755]])
 
 def undistort(img_path, balance=0.0, dim2=None, dim3=None):
 
     img = cv2.imread(img_path)
     dim1 = img.shape[:2][::-1]  #dim1 is the dimension of input image to un-distort
 
-    assert dim1[0]/dim1[1] == DIM[0]/DIM[1], "Image to undistort needs to have same aspect ratio as the ones used in calibration"
+    assert (dim1[0] == DIM[0]) and (dim1[1] == DIM[1]), "Image to undistort needs to have same dimensions as the ones used in calibration"
 
     if not dim2:
         dim2 = dim1
@@ -17,15 +21,18 @@ def undistort(img_path, balance=0.0, dim2=None, dim3=None):
     if not dim3:
         dim3 = dim1
 
-    scaled_K = K * dim1[0] / DIM[0]  # The values of K is to scale with image dimension.
-    scaled_K[2][2] = 1.0  # Except that K[2][2] is always 1.0
+    h,  w = img.shape[:2]
+    newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),1,(w,h))
 
-    # This is how scaled_K, dim2 and balance are used to determine the final K used to un-distort image. OpenCV document failed to make this clear!
-    new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(scaled_K, D, dim2, np.eye(3), balance=balance)
-    map1, map2 = cv2.fisheye.initUndistortRectifyMap(scaled_K, D, np.eye(3), new_K, dim3, cv2.CV_16SC2)
-    undistorted_img = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    # undistort
+    dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
 
-    cv2.imshow("undistorted", undistorted_img)
+    # crop the image
+    x,y,w,h = roi
+    dst = dst[y:y+h, x:x+w]
+    cv2.imwrite('calibresult.png',dst)
+
+    cv2.imshow("undistorted", dst)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
