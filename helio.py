@@ -16,12 +16,15 @@ import board
 from bokeh.plotting import curdoc, figure
 from bokeh.models import Button
 import cv2
+import datetime
 from gpiozero import Motor
 import json
 import logging
+import math
 import numpy as np
 from picamera.array import PiRGBArray
 from picamera import PiCamera
+from pysolar.solar import get_altitude, get_azimuth
 from scipy import linalg, signal, interpolate
 import scipy.ndimage
 import sys
@@ -41,30 +44,20 @@ MOTOR_TRAVEL_TIME = 25  # 25 seconds, 10 for speeding up durig debugging
 MOTOR_S = Motor(26, 20)
 MOTOR_T = Motor(19, 16)
 
-# Setup calibration data global variable
+# Setup camera calibration data
+DIM=(2592, 1944)
+mtx=np.array([[1513.35202186325, 0.0, 1381.794375023546], [0.0, 1514.809082655238, 1022.1313014429818], [0.0, 0.0, 1.0]])
+dist=np.array([[-0.3293226333311312, 0.13030355339675337, 0.00020716954584170977, -0.00032937886446441326, -0.027128518075549755]])
+
+# Setup camera field of view calibration data global variable
 Lh = 0.0  # visible length Ll of horizontal ruler
 Dh = 0.0  # at distance Dl of camera
 Lv = 0.0  # visible length Ll of vertical ruler
-Dv = 0.0  # at distance Dl of camera
+Dv = Dh  # at distance Dl of camera
 
-class Gyroscope(object):
-    ''' Gyroscope class.
-    '''
-
-    def __init__(self):
-
-        self.sensor = FXAS21002c()
-
-    def read_rads(self):
-        ''' Get a sample.
-
-            Returns
-            -------
-            s : np.array
-                The readings in radians/s (= raw values)
-        '''
-        return np.array(self.sensor.read())
-
+# Setup location
+lat = 51.2109917 
+lon = 4.4282524
 
 class Accelerometer(object):
     ''' Accelerometer class.
@@ -96,95 +89,6 @@ class Accelerometer(object):
         return np.array(self.sensor.read())
 
 
-class Magnetometer(object):
-    ''' Magnetometer class with calibration capabilities.
-    '''
-
-    def __init__(self):
-
-        self.sensor = FXOS8700_ms()
-
-    def read_raw(self):
-        ''' Get a sample.
-
-            Returns
-            -------
-            s : np.array
-                The reading in uT (not corrected).
-        '''
-        return np.array(self.sensor.read())
-
-    def read_average(self, number_of_readouts):
-        ''' Get 10 samples and take average.
-
-            Returns
-            -------
-            s : np.array
-                The reading in uT (not corrected).
-        '''
-        return np.array(self.sensor.read(number_of_readouts=number_of_readouts))
-
-
-class FXAS21002c(object):
-    ''' FXAS21002c Simple Driver for gyroscope sensor readings.
-    '''
-
-    def __init__(self):
-        self.i2c = board.I2C()
-        self.sensor = adafruit_fxas21002c.FXAS21002C(self.i2c)
-
-    def __del__(self):
-        pass
-
-    def read(self):
-        ''' Get a sample.
-
-            Returns
-            -------
-            s : list
-                The sample in radians/s, [x, y, z].
-        '''
-
-        x, y, z = self.sensor.gyroscope
-        return [x, y, z]
-
-
-class FXOS8700_ms(object):
-    ''' FXOS8700 Simple Driver for magnetic sensor readings.
-    '''
-
-    def __init__(self):
-        self.i2c = board.I2C()
-        self.sensor = adafruit_fxos8700.FXOS8700(self.i2c)
-
-    def __del__(self):
-        pass
-
-    def read(self, number_of_readouts=1):
-        ''' Get a sample.
-
-            Returns
-            -------
-            s : list
-                The sample in uT, [x, y, z].
-        '''
-
-        xs = 0.0
-        ys = 0.0
-        zs = 0.0
-        for i in range(number_of_readouts):
-            x, y, z = self.sensor.magnetometer
-            xs += x
-            ys += y
-            zs += z
-            if number_of_readouts > 1:
-                time.sleep(0.001)
-        xm = xs / number_of_readouts
-        ym = ys / number_of_readouts
-        zm = zs / number_of_readouts
-        return [xm, ym, zm]
-
-
 class FXOS8700_as(object):
     ''' FXOS8700 Simple Driver for acceleration sensor readings.
     '''
@@ -209,15 +113,19 @@ class FXOS8700_as(object):
         return [x, y, z]
 
 def read_level():
-    # This function assumes both motors to be fully retracted !!
     global accelerometer
     a = accelerometer.read_ms2()
     # level is angle between gravity vector and YZ plane
+    # looking at the mirror, level is negative if it's turned to the left (ax > 0)
     level = angle_between_vector_and_plane(a, np.array([1,0,0]))
+    if a[0] > 0:
+        level = -level
     # helio_tilt is angle between gravity vector and XZ plane
+    # looking at the mirror, helio_tilt is negative if it's turned forward (ay > 0)
     helio_tilt = angle_between_vector_and_plane(a, np.array([0,1,0]))
+    if a[1] > 0:
+        helio_tilt = -helio_tilt
     return level, helio_tilt
-
 
 
 def retract(MOTOR=None, motorname=None):
@@ -260,9 +168,7 @@ def data_handler():
 
 def undistort(img, balance=0.0, dim2=None, dim3=None):
     # constant parameters obtained by running camera calibration
-    DIM=(2592, 1944)
-    mtx=np.array([[1513.35202186325, 0.0, 1381.794375023546], [0.0, 1514.809082655238, 1022.1313014429818], [0.0, 0.0, 1.0]])
-    dist=np.array([[-0.3293226333311312, 0.13030355339675337, 0.00020716954584170977, -0.00032937886446441326, -0.027128518075549755]])
+    global DIM, mtx, dist
 
     dim1 = img.shape[:2][::-1]  #dim1 is the dimension of input image to un-distort
 
@@ -275,18 +181,26 @@ def undistort(img, balance=0.0, dim2=None, dim3=None):
         dim3 = dim1
 
     h,  w = img.shape[:2]
-    newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),1,(w,h))
+    newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),1.0,(w,h))
 
     # undistort
     dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
 
-    # crop the image
+    # crop the image (increasing the cropping by 20%)
     x,y,w,h = roi
-    dst = dst[y:y+h, x:x+w]
+    o = int(y-.2*h)
+    b = int(y+h+.2*h)
+    l = int(x-.2*w)
+    r = int(x+w+.2*w)
+    dst = dst[o:b, l:r]
+
     return dst
 
 
 def read_sun_to_mirror():
+    # constant paramters obtained by measuring a vertical and horizontal ruler at a distance of the camera
+    global Lh, Dh, Lv, Dv
+
     global camera, rawCapture
     # capture image
     camera.capture(rawCapture, format="bgr")
@@ -299,14 +213,20 @@ def read_sun_to_mirror():
     gray = cv2.cvtColor(image_straight, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (32,32), 0)
     (_, _, _, (x,y)) = cv2.minMaxLoc(gray)
+    logging.debug(f"Brightest spot at ({x}, {y})")
 
     # convert to normalized pixel position relative to center lines
     (w, h) = gray.shape[:2][::-1]
     xn = 2 * x / w - 1
     yn = - 2 * y / h + 1 
+    logging.debug(f"Brightest spot in normalized pixel position ({xn}, {yn})")
 
-    # 
-    efh = atan(Lh * x / 2 / Dh) 
+    # calculate horizontal (swipe - heading) and vertikal (tilt - elevation) angles
+    efh = math.atan(Lh * xn / 2 / Dh) 
+    efv = math.atan(Lv * yn / 2 / Dv) 
+    logging.debug(f"Brightest spot heading and elevation ({np.degrees(efh)}, {np.degrees(efv)})")
+
+    return efh, efv
 
 
 def move_and_report():
@@ -315,9 +235,8 @@ def move_and_report():
     def count(start):
         global reporting
         while reporting:
-            v, e, h = read_elevation_and_heading()
-            #print("elevation: {:4.1f} - heading: {:4.1f}".format(np.degrees(e), np.degrees(h)), end="\r")
-            print("x: {:.3f} - y: {:.3f} - z: {:.3f} - elevation: {:.3f} - heading: {:.3f}".format(ref_col(v)[0], ref_col(v)[1], ref_col(v)[2], np.degrees(e), np.degrees(h)))
+            efh, efv = read_sun_to_mirror()
+            print("sun relative to mirror elevation: {:.3f} - heading: {:.3f}".format(np.degrees(efv), np.degrees(efh)))
             time.sleep(0.1)
 
     def start_moving(direction):
@@ -474,12 +393,14 @@ def menu():
 
 # Setup sensor
 accelerometer = Accelerometer()
-magnetometer = Magnetometer()
-gyroscope = Gyroscope()
 
 # setup camera
 camera = PiCamera()
 rawCapture = PiRGBArray(camera)
+
+# demo sun position
+date = datetime.datetime.now(datetime.timezone.utc)
+logging.info(f"Current position of the sun: altitude {get_altitude(lat, lon, date)}, azimuth {get_azimuth(lat, lon, date)}")
 
 # start menu in a separate thread
 t = threading.Thread(target=menu)

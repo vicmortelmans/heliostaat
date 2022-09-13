@@ -22,15 +22,19 @@ def undistort(img_path, balance=0.0, dim2=None, dim3=None):
         dim3 = dim1
 
     h,  w = img.shape[:2]
-    newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),1,(w,h))
+    newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),1.0,(w,h))
 
     # undistort
     dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
 
-    # crop the image
+    # crop the image (increasing the cropping by 20%)
     x,y,w,h = roi
-    dst = dst[y:y+h, x:x+w]
-    cv2.imwrite('calibresult.png',dst)
+    b = int(y+h+.2*h)
+    o = int(y-.2*h)
+    l = int(x-.2*w)
+    r = int(x+w+.2*w)
+    dst = dst[o:b, l:r]
+    cv2.imwrite(img_path + '_undistorted.png',dst)
 
     cv2.imshow("undistorted", dst)
     cv2.waitKey(0)
