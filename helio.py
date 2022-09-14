@@ -18,6 +18,7 @@ from bokeh.models import Button
 import cv2
 import datetime
 from gpiozero import Motor
+import imutils
 import json
 import logging
 import math
@@ -44,16 +45,20 @@ MOTOR_TRAVEL_TIME = 25  # 25 seconds, 10 for speeding up durig debugging
 MOTOR_S = Motor(26, 20)
 MOTOR_T = Motor(19, 16)
 
+# Setup camera resolution
+camera_w = 2592
+camera_h = 1944
+
 # Setup camera calibration data
 DIM=(2592, 1944)
 mtx=np.array([[1513.35202186325, 0.0, 1381.794375023546], [0.0, 1514.809082655238, 1022.1313014429818], [0.0, 0.0, 1.0]])
 dist=np.array([[-0.3293226333311312, 0.13030355339675337, 0.00020716954584170977, -0.00032937886446441326, -0.027128518075549755]])
 
 # Setup camera field of view calibration data global variable
-Lh = 0.0  # visible length Ll of horizontal ruler
-Dh = 0.0  # at distance Dl of camera
-Lv = 0.0  # visible length Ll of vertical ruler
-Dv = Dh  # at distance Dl of camera
+Lh = 188.3  # visible length Ll of horizontal ruler
+Dh = 82.0  # at distance Dl of camera
+Lv = 145.5  # visible length Ll of vertical ruler
+Dv = 79.5  # at distance Dl of camera
 
 # Setup location
 lat = 51.2109917 
@@ -166,24 +171,24 @@ def data_handler():
         generator_lock.release()
     # actual drawing is only done after the callback finishes!
 
-def undistort(img, balance=0.0, dim2=None, dim3=None):
+def capture_image():
     # constant parameters obtained by running camera calibration
     global DIM, mtx, dist
+    global Lh, Dh, Lv, Dv
 
+    global camera, rawCapture
+    # capture image
+    camera.capture(rawCapture, format="bgr")
+    img = rawCapture.array
+    logging.debug(f"Captured image with dimensions {img.shape}")
+    rawCapture.truncate(0)
+    
     dim1 = img.shape[:2][::-1]  #dim1 is the dimension of input image to un-distort
-
     assert (dim1[0] == DIM[0]) and (dim1[1] == DIM[1]), "Image to undistort needs to have same dimensions as the ones used in calibration"
 
-    if not dim2:
-        dim2 = dim1
-
-    if not dim3:
-        dim3 = dim1
-
+    # undistort
     h,  w = img.shape[:2]
     newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),1.0,(w,h))
-
-    # undistort
     dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
 
     # crop the image (increasing the cropping by 20%)
@@ -193,37 +198,52 @@ def undistort(img, balance=0.0, dim2=None, dim3=None):
     l = int(x-.2*w)
     r = int(x+w+.2*w)
     dst = dst[o:b, l:r]
+    logging.debug(f"Undistorted image after cropping has dimensions {dst.shape}")
 
-    return dst
+    # stretch the image to fix aspect ratio
+    h, w = dst.shape[:2]
+    c = Lh * Dv * h / Lv / Dh / w
+    logging.debug(f"Restoring aspect ratio by resizing vertically with factor {c}")
+    asp = cv2.resize(dst, (w, int(w / c)))
+    logging.debug(f"Image after restoring aspect ratio has dimensions {asp.shape}")
+
+    #cv2.imshow("undistorted", asp)
+    #cv2.waitKey(0)
+    #cv2.destroyAllWindows()
+
+    # rotate the image
+    level, _ = read_level()
+    logging.debug(f"Level: {np.degrees(level)}")
+    rot = imutils.rotate_bound(asp, np.degrees(level)) 
+    logging.debug(f"Image after rotation has dimensions {rot.shape}")
+
+    cv2.imshow("undistorted", rot)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    return rot
 
 
 def read_sun_to_mirror():
-    # constant paramters obtained by measuring a vertical and horizontal ruler at a distance of the camera
-    global Lh, Dh, Lv, Dv
 
-    global camera, rawCapture
     # capture image
-    camera.capture(rawCapture, format="bgr")
-    image = rawCapture.array
-
-    # undistort image
-    image_straight = undistort(image, balance=0.8)
+    image_straight = capture_image()
 
     # find brightest point pixel position
     gray = cv2.cvtColor(image_straight, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (32,32), 0)
+    gray = cv2.GaussianBlur(gray, (17,17), 0)
     (_, _, _, (x,y)) = cv2.minMaxLoc(gray)
     logging.debug(f"Brightest spot at ({x}, {y})")
 
-    # convert to normalized pixel position relative to center lines
+    # convert to pixel position relative to center lines
     (w, h) = gray.shape[:2][::-1]
-    xn = 2 * x / w - 1
-    yn = - 2 * y / h + 1 
-    logging.debug(f"Brightest spot in normalized pixel position ({xn}, {yn})")
+    xn = x - w/2 
+    yn = - y + h/2 
+    logging.debug(f"Brightest spot pixel position relative to center ({xn}, {yn})")
 
     # calculate horizontal (swipe - heading) and vertikal (tilt - elevation) angles
-    efh = math.atan(Lh * xn / 2 / Dh) 
-    efv = math.atan(Lv * yn / 2 / Dv) 
+    efh = math.atan(Lh * xn / Dh / w) 
+    efv = math.atan(Lh * yn / Dh / w) 
     logging.debug(f"Brightest spot heading and elevation ({np.degrees(efh)}, {np.degrees(efv)})")
 
     return efh, efv
@@ -396,6 +416,7 @@ accelerometer = Accelerometer()
 
 # setup camera
 camera = PiCamera()
+camera.resolution = (camera_w, camera_h)
 rawCapture = PiRGBArray(camera)
 
 # demo sun position
