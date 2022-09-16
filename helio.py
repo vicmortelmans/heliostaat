@@ -132,6 +132,16 @@ def read_level():
         helio_tilt = -helio_tilt
     return level, helio_tilt
 
+def move_for_seconds(MOTOR=None, motorname=None, duration=0, forward=False):
+    logging.info(f"Start moving {motorname} motor")
+    if forward:
+        MOTOR.forward()
+    else:
+        MOTOR.backward()
+    time.sleep(duration)
+    logging.info(f"Stop {motorname} motor")
+    MOTOR.stop()
+
 
 def retract(MOTOR=None, motorname=None):
     logging.info(f"Start fully retract {motorname} motor")
@@ -139,6 +149,7 @@ def retract(MOTOR=None, motorname=None):
     time.sleep(MOTOR_TRAVEL_TIME)
     logging.info(f"Stop fully retract {motorname} motor")
     MOTOR.stop()
+
 
 def retract_motors():
     retract(MOTOR=MOTOR_S, motorname="sweep")
@@ -218,8 +229,9 @@ def capture_image():
     logging.debug(f"Image after rotation has dimensions {rot.shape}")
 
     cv2.imshow("undistorted", rot)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    cv2.waitKey(1000)
+    #cv2.destroyAllWindows()
+    #cv2.imwrite('image.png',rot)
 
     return rot
 
@@ -247,6 +259,46 @@ def read_sun_to_mirror():
     logging.debug(f"Brightest spot heading and elevation ({np.degrees(efh)}, {np.degrees(efv)})")
 
     return efh, efv
+
+def move_to_target_interactively():
+    th = np.radians(float(input("Horizontal angle of view: ")))
+    tv = np.radians(float(input("Vertical angle of view: ")))
+    move_to_target(th, tv)
+
+
+def move_to_target(th, tv):
+    global Lh, Dh, Lv, Dv
+    ACCURACY = np.radians(1)  # 1 degree
+    fovh = math.atan(Lh/2/Dh)  # maximum horizontal viewing angle (= 50% of total field of view)
+    fovv = math.atan(Lv/2/Dv)  # maximum vertical viewing angle (= 50% of total field of view)
+    offsh = fovh
+    offsv = fovv
+    stepT = MOTOR_TRAVEL_TIME / 3  # somewhat less than 50% of total span
+    stepS = MOTOR_TRAVEL_TIME / 3
+    efh, efv = read_sun_to_mirror()  # viewing angles
+    noffsh = th - efh
+    noffsv = tv - efv
+    logging.info(f"Current position of the sun in the photo: {np.degrees((efh, efv))}; target: {np.degrees((th, tv))}")
+    while abs(noffsh) > ACCURACY or abs(noffsv) > ACCURACY:
+        stepS = abs(stepS * noffsh / offsh)
+        motorname = "swivel"
+        direction = False if noffsh > 0 else True  # 'moving' the sun down in the photo means collapsing the mirror
+        # NOTE: the directions are flipped if the mirror hinge would be mounted on the other side!
+        logging.debug(f"Angle {motorname} {'extending' if direction else 'collapsing'} {stepS} seconds towards {np.degrees(noffsh)} degrees offset")
+        move_for_seconds(MOTOR=MOTOR_S, motorname=motorname, duration=stepS, forward=direction)
+        _, efv = read_sun_to_mirror()
+        noffsv = tv - efv
+        stepT = abs(stepT * noffsv / offsv)
+        motorname = "tilt"
+        direction = True if noffsv > 0 else False  # 'moving' the sun up in the photo means extending the mirror
+        logging.debug(f"Angle {motorname} {'extending' if direction else 'collapsing'} {stepT} seconds towards {np.degrees(noffsv)} degrees offset")
+        move_for_seconds(MOTOR=MOTOR_T, motorname=motorname, duration=stepT, forward=direction)
+        offsh = noffsh
+        offsv = noffsv
+        efh, efv = read_sun_to_mirror()  # viewing angles
+        noffsh = th - efh
+        noffsv = tv - efv
+        logging.debug(f"Offset at end of loop: {np.degrees((noffsh, noffsv))}")
 
 
 def move_and_report():
@@ -395,6 +447,7 @@ def menu():
     options = [
         ['Read sun position relative to mirror', read_sun_to_mirror],
         ['Move using keyboard and report position', move_and_report],
+        ['Move to target interactively', move_to_target_interactively],
         ['Retract motors', retract_motors],
         ['Quit', sys.exit]
     ]
