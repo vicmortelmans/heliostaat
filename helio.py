@@ -218,20 +218,11 @@ def capture_image():
     asp = cv2.resize(dst, (w, int(w / c)))
     logging.debug(f"Image after restoring aspect ratio has dimensions {asp.shape}")
 
-    #cv2.imshow("undistorted", asp)
-    #cv2.waitKey(0)
-    #cv2.destroyAllWindows()
-
     # rotate the image
     level, _ = read_level()
     logging.debug(f"Level: {np.degrees(level)}")
     rot = imutils.rotate_bound(asp, np.degrees(level)) 
     logging.debug(f"Image after rotation has dimensions {rot.shape}")
-
-    cv2.imshow("undistorted", rot)
-    cv2.waitKey(1000)
-    #cv2.destroyAllWindows()
-    #cv2.imwrite('image.png',rot)
 
     return rot
 
@@ -246,6 +237,12 @@ def read_sun_to_mirror():
     gray = cv2.GaussianBlur(gray, (17,17), 0)
     (_, _, _, (x,y)) = cv2.minMaxLoc(gray)
     logging.debug(f"Brightest spot at ({x}, {y})")
+
+    cv2.circle(image_straight, (x,y), 10, (255, 0, 0), 2)
+    cv2.imshow("sun", image_straight)
+    cv2.waitKey(1000)
+    #cv2.destroyAllWindows()
+    #cv2.imwrite('image.png',rot)
 
     # convert to pixel position relative to center lines
     (w, h) = gray.shape[:2][::-1]
@@ -280,7 +277,7 @@ def move_to_target(th, tv):
     noffsv = tv - efv
     logging.info(f"Current position of the sun in the photo: {np.degrees((efh, efv))}; target: {np.degrees((th, tv))}")
     while abs(noffsh) > ACCURACY or abs(noffsv) > ACCURACY:
-        stepS = abs(stepS * noffsh / offsh)
+        stepS = abs(stepS * noffsh / offsh) if offsh else stepS
         motorname = "swivel"
         direction = False if noffsh > 0 else True  # 'moving' the sun down in the photo means collapsing the mirror
         # NOTE: the directions are flipped if the mirror hinge would be mounted on the other side!
@@ -288,7 +285,7 @@ def move_to_target(th, tv):
         move_for_seconds(MOTOR=MOTOR_S, motorname=motorname, duration=stepS, forward=direction)
         _, efv = read_sun_to_mirror()
         noffsv = tv - efv
-        stepT = abs(stepT * noffsv / offsv)
+        stepT = abs(stepT * noffsv / offsv) if offsv else stepT
         motorname = "tilt"
         direction = True if noffsv > 0 else False  # 'moving' the sun up in the photo means extending the mirror
         logging.debug(f"Angle {motorname} {'extending' if direction else 'collapsing'} {stepT} seconds towards {np.degrees(noffsv)} degrees offset")
