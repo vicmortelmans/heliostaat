@@ -120,15 +120,15 @@ class FXOS8700_as(object):
 def read_level():
     global accelerometer
     a = accelerometer.read_ms2()
-    # level is angle between gravity vector and YZ plane
-    # looking at the mirror, level is negative if it's turned to the left (ax > 0)
-    level = angle_between_vector_and_plane(a, np.array([1,0,0]))
-    if a[0] > 0:
+    # level is angle between gravity vector and XZ plane
+    # looking at the mirror, level is negative if it's turned to the right (ay < 0)
+    level = angle_between_vector_and_plane(a, np.array([0,1,0]))
+    if a[1] < 0:
         level = -level
-    # helio_tilt is angle between gravity vector and XZ plane
-    # looking at the mirror, helio_tilt is negative if it's turned forward (ay > 0)
-    helio_tilt = angle_between_vector_and_plane(a, np.array([0,1,0]))
-    if a[1] > 0:
+    # helio_tilt is angle between gravity vector and XY plane
+    # looking at the mirror, helio_tilt is negative if it's turned forward (az > 0)
+    helio_tilt = angle_between_vector_and_plane(a, np.array([0,0,1]))
+    if a[2] > 0:
         helio_tilt = -helio_tilt
     return level, helio_tilt
 
@@ -221,7 +221,8 @@ def capture_image():
     # rotate the image
     level, _ = read_level()
     logging.debug(f"Level: {np.degrees(level)}")
-    rot = imutils.rotate_bound(asp, np.degrees(level)) 
+    rot = imutils.rotate_bound(asp, 180 + np.degrees(level))  # 180 because camera is mounted upside down
+    # rotate_bound positive angle is clockwise
     logging.debug(f"Image after rotation has dimensions {rot.shape}")
 
     return rot
@@ -270,31 +271,40 @@ def move_to_target(th, tv):
     fovv = math.atan(Lv/2/Dv)  # maximum vertical viewing angle (= 50% of total field of view)
     offsh = fovh
     offsv = fovv
-    stepT = MOTOR_TRAVEL_TIME / 3  # somewhat less than 50% of total span
-    stepS = MOTOR_TRAVEL_TIME / 3
+    stepT = MOTOR_TRAVEL_TIME / 4  # somewhat less than 50% of total span
+    stepS = MOTOR_TRAVEL_TIME / 4
     efh, efv = read_sun_to_mirror()  # viewing angles
     noffsh = th - efh
     noffsv = tv - efv
     logging.info(f"Current position of the sun in the photo: {np.degrees((efh, efv))}; target: {np.degrees((th, tv))}")
     while abs(noffsh) > ACCURACY or abs(noffsv) > ACCURACY:
-        stepS = abs(stepS * noffsh / offsh) if offsh else stepS
-        motorname = "swivel"
-        direction = False if noffsh > 0 else True  # 'moving' the sun down in the photo means collapsing the mirror
-        # NOTE: the directions are flipped if the mirror hinge would be mounted on the other side!
-        logging.debug(f"Angle {motorname} {'extending' if direction else 'collapsing'} {stepS} seconds towards {np.degrees(noffsh)} degrees offset")
-        move_for_seconds(MOTOR=MOTOR_S, motorname=motorname, duration=stepS, forward=direction)
-        _, efv = read_sun_to_mirror()
-        noffsv = tv - efv
-        stepT = abs(stepT * noffsv / offsv) if offsv else stepT
-        motorname = "tilt"
-        direction = True if noffsv > 0 else False  # 'moving' the sun up in the photo means extending the mirror
-        logging.debug(f"Angle {motorname} {'extending' if direction else 'collapsing'} {stepT} seconds towards {np.degrees(noffsv)} degrees offset")
-        move_for_seconds(MOTOR=MOTOR_T, motorname=motorname, duration=stepT, forward=direction)
-        offsh = noffsh
-        offsv = noffsv
-        efh, efv = read_sun_to_mirror()  # viewing angles
-        noffsh = th - efh
-        noffsv = tv - efv
+        if abs(noffsh) > ACCURACY:
+            stepS = abs(stepS * noffsh / offsh) if offsh else stepS
+            motorname = "swivel"
+            direction = False if noffsh > 0 else True  # 'moving' the sun down in the photo means collapsing the mirror
+            # NOTE: the directions are flipped if the mirror hinge would be mounted on the other side!
+            logging.debug(f"Angle {motorname} {'extending' if direction else 'collapsing'} {stepS} seconds towards {np.degrees(noffsh)} degrees offset")
+            move_for_seconds(MOTOR=MOTOR_S, motorname=motorname, duration=stepS, forward=direction)
+            efh, efv = read_sun_to_mirror()
+            offsh = noffsh
+            noffsh = th - efh
+            if abs(noffsh) > ACCURACY and abs(noffsh / offsh) > 0.9:
+                logging.warning(f"Gone beyond swivel movement range: offsh {offsh} => noffsh {noffsh}")
+                break
+        if abs(noffsv) > ACCURACY:
+            noffsv = tv - efv
+            stepT = abs(stepT * noffsv / offsv) if offsv else stepT
+            motorname = "tilt"
+            direction = True if noffsv > 0 else False  # 'moving' the sun up in the photo means extending the mirror
+            logging.debug(f"Angle {motorname} {'extending' if direction else 'collapsing'} {stepT} seconds towards {np.degrees(noffsv)} degrees offset")
+            move_for_seconds(MOTOR=MOTOR_T, motorname=motorname, duration=stepT, forward=direction)
+            efh, efv = read_sun_to_mirror()  # viewing angles
+            offsv = noffsv
+            noffsv = tv - efv
+            if abs(noffsv) > ACCURACY and abs(noffsv / offsv) > 0.9:
+                logging.warning(f"Gone beyond tilt movement range: offsv {offsv} => noffsv {noffsv}")
+                break
+            noffsh = th - efh
         logging.debug(f"Offset at end of loop: {np.degrees((noffsh, noffsv))}")
 
 
