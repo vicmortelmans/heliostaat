@@ -41,11 +41,14 @@ logging.basicConfig(force=True, format='%(asctime)s,%(msecs)d %(levelname)-8s [%
 # force=True is needed because bokeh sets the level down
 
 # Setup motors
-MOTOR_TRAVEL_TIME = 25  # 25 seconds, 10 for speeding up durig debugging
-MOTOR_S = Motor(26, 20)
+MOTOR_TRAVEL_TIME = 25  # 25 seconds, based on experiment, 10 for speeding up durig debugging
+MOTOR_S = Motor(26, 20)  # GPIO pins connected to input leads 'forward' and 'backward'
 MOTOR_T = Motor(19, 16)
+# https://gpiozero.readthedocs.io/en/stable/recipes.html?highlight=motor#motors
+# https://gpiozero.readthedocs.io/en/v1.2.0/api_output.html#motor
+# L298N motor driver module H-Bridge
 
-# Setup camera resolution
+# Setup camera resolution, based on camera specs
 camera_w = 2592
 camera_h = 1944
 
@@ -53,12 +56,13 @@ camera_h = 1944
 DIM=(2592, 1944)
 mtx=np.array([[1513.35202186325, 0.0, 1381.794375023546], [0.0, 1514.809082655238, 1022.1313014429818], [0.0, 0.0, 1.0]])
 dist=np.array([[-0.3293226333311312, 0.13030355339675337, 0.00020716954584170977, -0.00032937886446441326, -0.027128518075549755]])
+# Output of scripts in camera_calibration directory
 
 # Setup camera field of view calibration data global variable
-Lh = 188.3  # visible length Ll of horizontal ruler
-Dh = 82.0  # at distance Dl of camera
-Lv = 145.5  # visible length Ll of vertical ruler
-Dv = 79.5  # at distance Dl of camera
+Lh = 188.3  # visible length Ll of horizontal ruler (cm)
+Dh = 82.0  # at distance Dl of camera (cm)
+Lv = 145.5  # visible length Ll of vertical ruler (cm)
+Dv = 79.5  # at distance Dl of camera (cm)
 
 # Setup location
 lat = 51.2109917 
