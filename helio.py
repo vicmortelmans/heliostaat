@@ -234,7 +234,7 @@ def capture_image():
 
 def read_sun_to_mirror():
 
-    # capture image
+    # capture image (undistorted, cropped, strechted and rotated!)
     image_straight = capture_image()
 
     # find brightest point pixel position
@@ -272,14 +272,28 @@ def read_target_to_horizon():
     logging.info(f"Current position of the sun relative to mirror: altitude {efv}, azimuth {efh}")
     eoh = 2 * efh - eh
     eov = 2 * efv - ev
-    logging.info(f"Position of the target relative to horizon: altitude {eov}, azimuth {eoh}")
+    logging.info(f"Position of the target relative to mirror/horizon: altitude {eov}, azimuth {eoh}")
     return eoh, eov
 
 
-def move_mirror_to_relative_position_to_sun_interactively():
+def move_mirror_to_relative_position_to_sun():
     th = np.radians(float(input("Horizontal angle of view: ")))
     tv = np.radians(float(input("Vertical angle of view: ")))
     move_to_target(th, tv)
+
+
+def move_mirror_inbetween_target_and_sun():
+    eoh = np.radians(float(input("Horizontal position of the target relative to the mirror/horizon: ")))
+    eov = np.radians(float(input("Vertical position of the target relative to the mirror/horizon: ")))
+    while True:
+        date = datetime.datetime.now(datetime.timezone.utc)
+        eh = get_azimuth(lat, lon, date)
+        ev = get_altitude(lat, lon, date)
+        logging.info(f"Current position of the sun relative to horizon: altitude {ev}, azimuth {eh}")
+        th = (eh + eoh) / 2
+        tv = (ev + eov) / 2
+        move_to_target(th, tv)
+        time.sleep(60)
 
 
 def move_to_target(th, tv):
@@ -473,7 +487,8 @@ def menu():
         ['Read sun position relative to mirror', read_sun_to_mirror],
         ['Read target position relative to horizon', read_target_to_horizon],
         ['Move using keyboard and report position', move_and_report],
-        ['Move to relative position to sun interactively', move_mirror_to_relative_position_to_sun_interactively],
+        ['Move to relative position to sun', move_mirror_to_relative_position_to_sun],
+        ['Move reflection to target', move_mirror_inbetween_target_and_sun],
         ['Retract motors', retract_motors],
         ['Quit', sys.exit]
     ]
