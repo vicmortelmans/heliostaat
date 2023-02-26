@@ -225,7 +225,7 @@ def capture_image():
     # rotate the image
     level, _ = read_level()
     logging.debug(f"Level: {np.degrees(level)}")
-    rot = imutils.rotate_bound(asp, 180 + np.degrees(level))  # 180 because camera is mounted upside down
+    rot = imutils.rotate_bound(asp, np.degrees(level))  # add 180 to level if camera is mounted upside down
     # rotate_bound positive angle is clockwise
     logging.debug(f"Image after rotation has dimensions {rot.shape}")
 
