@@ -242,8 +242,11 @@ def read_sun_to_mirror():
     gray = cv2.GaussianBlur(gray, (17,17), 0)
     (_, _, _, (x,y)) = cv2.minMaxLoc(gray)
     logging.debug(f"Brightest spot at ({x}, {y})")
-
+    
+    # draw a marker on the brightest point
     cv2.circle(image_straight, (x,y), 10, (255, 0, 0), 2)
+
+    # display the image in a separate window
     cv2.imshow("sun", image_straight)
     cv2.waitKey(1000)
     #cv2.destroyAllWindows()
@@ -511,6 +514,14 @@ accelerometer = Accelerometer()
 # setup camera
 camera = PiCamera()
 camera.resolution = (camera_w, camera_h)
+'''
+camera.iso = 100
+speed = 1/60  # seconds
+camera.shutter_speed = int(speed * 1000000)  # microseconds
+camera.exposure_mode = 'off'
+camera.awb_mode = 'off'
+camera.awb_gains = (1.0,1.0)
+'''
 rawCapture = PiRGBArray(camera)
 
 # demo sun position
