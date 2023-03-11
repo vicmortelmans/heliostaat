@@ -201,6 +201,9 @@ def capture_image():
     dim1 = img.shape[:2][::-1]  #dim1 is the dimension of input image to un-distort
     assert (dim1[0] == DIM[0]) and (dim1[1] == DIM[1]), "Image to undistort needs to have same dimensions as the ones used in calibration"
 
+    # draw a border around the image (for debugging the behaviour of undistort and rotate)
+    img = cv2.rectangle(img, (0,0), (dim1[0], dim1[1]), (255,255,255), 3)
+
     # undistort
     h,  w = img.shape[:2]
     newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),1.0,(w,h))
@@ -225,7 +228,7 @@ def capture_image():
     # rotate the image
     level, _ = read_level()
     logging.debug(f"Level: {np.degrees(level)}")
-    rot = imutils.rotate_bound(asp, np.degrees(level))  # add 180 to level if camera is mounted upside down
+    rot = imutils.rotate_bound(asp, -np.degrees(level))  # add 180 to level if camera is mounted upside down
     # rotate_bound positive angle is clockwise
     logging.debug(f"Image after rotation has dimensions {rot.shape}")
 
@@ -268,14 +271,14 @@ def read_sun_to_mirror():
 
 def read_target_to_horizon():
     date = datetime.datetime.now(datetime.timezone.utc)
-    eh = get_azimuth(lat, lon, date)
-    ev = get_altitude(lat, lon, date)
-    logging.info(f"Current position of the sun relative to horizon: altitude {ev}, azimuth {eh}")
+    eh = np.radians(get_azimuth(lat, lon, date))
+    ev = np.radians(get_altitude(lat, lon, date))
+    logging.info(f"Current position of the sun relative to horizon: altitude {np.degrees(ev)}, azimuth {np.degrees(eh)}")
     efh, efv = read_sun_to_mirror()
-    logging.info(f"Current position of the sun relative to mirror: altitude {efv}, azimuth {efh}")
+    logging.info(f"Current position of the sun relative to mirror: altitude {np.degrees(efv)}, azimuth {np.degrees(efh)}")
     eoh = 2 * efh - eh
     eov = 2 * efv - ev
-    logging.info(f"Position of the target relative to mirror/horizon: altitude {eov}, azimuth {eoh}")
+    logging.info(f"Position of the target relative to mirror/horizon: altitude {np.degrees(eov)}, azimuth {np.degrees(eoh)}")
     return eoh, eov
 
 
@@ -290,9 +293,9 @@ def move_mirror_inbetween_target_and_sun():
     eov = np.radians(float(input("Vertical position of the target relative to the mirror/horizon: ")))
     while True:
         date = datetime.datetime.now(datetime.timezone.utc)
-        eh = get_azimuth(lat, lon, date)
-        ev = get_altitude(lat, lon, date)
-        logging.info(f"Current position of the sun relative to horizon: altitude {ev}, azimuth {eh}")
+        eh = np.radians(get_azimuth(lat, lon, date))
+        ev = np.radians(get_altitude(lat, lon, date))
+        logging.info(f"Current position of the sun relative to horizon: altitude {np.degrees(ev)}, azimuth {np.degrees(eh)}")
         th = (eh + eoh) / 2
         tv = (ev + eov) / 2
         move_to_target(th, tv)
@@ -514,14 +517,12 @@ accelerometer = Accelerometer()
 # setup camera
 camera = PiCamera()
 camera.resolution = (camera_w, camera_h)
-'''
-camera.iso = 100
-speed = 1/60  # seconds
+camera.iso = 400
+speed = 1/30  # seconds
 camera.shutter_speed = int(speed * 1000000)  # microseconds
 camera.exposure_mode = 'off'
 camera.awb_mode = 'off'
 camera.awb_gains = (1.0,1.0)
-'''
 rawCapture = PiRGBArray(camera)
 
 # demo sun position
