@@ -271,13 +271,16 @@ def read_sun_to_mirror():
 
 def read_target_to_horizon():
     date = datetime.datetime.now(datetime.timezone.utc)
-    eh = np.radians(get_azimuth(lat, lon, date))
+    # e is angle between sun vector and north vector; + is up (v, 0-90 practical range) or right (h, 0-360)
     ev = np.radians(get_altitude(lat, lon, date))
+    eh = np.radians(get_azimuth(lat, lon, date))
     logging.info(f"Current position of the sun relative to horizon: altitude {np.degrees(ev)}, azimuth {np.degrees(eh)}")
+    # ef is angle between sun vector and mirror normal vector; + is up (v) or right (h)
     efh, efv = read_sun_to_mirror()
     logging.info(f"Current position of the sun relative to mirror: altitude {np.degrees(efv)}, azimuth {np.degrees(efh)}")
-    eoh = 2 * efh - eh
-    eov = 2 * efv - ev
+    # eo is angle between target vector and north vector;  
+    eoh = eh - 2 * efh
+    eov = ev - 2 * efv
     logging.info(f"Position of the target relative to mirror/horizon: altitude {np.degrees(eov)}, azimuth {np.degrees(eoh)}")
     return eoh, eov
 
@@ -296,8 +299,8 @@ def move_mirror_inbetween_target_and_sun():
         eh = np.radians(get_azimuth(lat, lon, date))
         ev = np.radians(get_altitude(lat, lon, date))
         logging.info(f"Current position of the sun relative to horizon: altitude {np.degrees(ev)}, azimuth {np.degrees(eh)}")
-        th = (eh + eoh) / 2
-        tv = (ev + eov) / 2
+        th = (eh - eoh) / 2
+        tv = (ev - eov) / 2
         move_to_target(th, tv)
         time.sleep(60)
 
@@ -403,18 +406,6 @@ def move_and_report():
     c.join()
 
 
-def projection_on_vector(v1, v2):
-    ''' Returns vector projection of v1 on v2
-    '''
-    return (np.dot(v1, v2) / np.dot(v2, v2)) * np.array(v2)
-
-
-def projection_on_plane(v1, n):
-    ''' Returns project of v1 on the plane defined by normal vector n
-    '''
-    return v1 - projection_on_vector(v1, n)
-
-
 def angle_between_vectors(v1, v2):
     ''' Returns the angle between v1 and v2 in radians
     '''
@@ -436,44 +427,6 @@ def angle_between_vector_and_plane(v, n):
     '''
     vp = projection_on_plane(v, n)
     return angle_between_vectors(v, vp)
-
-def point_projected_on_line(a, b, c):
-    '''Returns the project of a on the line through b and c
-    '''
-    bc = np.linalg.norm(c - b)
-    d = (c - b) / bc
-    v = a - b
-    t = np.dot(v, d)
-    p = b + t * d
-    return p
-    
-def distance_point_to_line_and_projection_to_end_points(a, b, c):
-    '''Returns the distance between a and the line through b and c
-       and the distance from the projection of a on this line to resp. b and c 
-    '''
-    bc = np.linalg.norm(c - b)
-    d = (c - b) / bc
-    v = a - b
-    t = np.dot(v, d)
-    p = point_projected_on_line(a, b, c)
-    return np.linalg.norm(p - a), t, abs(bc-t)
-
-def point_inbetween_two_other_points(p, a, b):
-    '''Returns true if p is inbetween a and b (all points supposed to be colinear
-    '''
-    ap = p - a
-    bp = p - b
-    # only if p is inbetween a and b, ap and bp have opposite direction
-    # so ||ap+bp|| <= ||ap-bp||  (including the edge case where p = a or p = b)
-    # if p is not inbetween a and b, ap and bp have the same direction
-    # so ||ap+bp|| > ||ap-bp||
-    return np.linalg.norm(ap + bp) <= np.linalg.norm(ap - bp)
-
-def point_inbetween_two_other_points_3d(p, a, b):
-    '''Returns True if projection of p on line ab is between a and b
-    '''
-    p2 = point_projected_on_line(p, a, b)
-    return point_inbetween_two_other_points(p2, a, b)
 
 def plot(data=None, title=None, final=False):
     global plot_data
